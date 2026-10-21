@@ -181,6 +181,9 @@ class TestHallucinationRejection:
                 ]
 
         monkeypatch.setattr(backend, "_ensure_model", lambda: FakeModel())
+        vad = tmp_path / "vad.bin"
+        vad.write_bytes(b"fake; native model is replaced by FakeModel")
+        monkeypatch.setattr(backend, "vad_file", lambda: vad)
         out = backend.transcribe(
             np.ones(16000, dtype=np.float32) * 0.5
         )

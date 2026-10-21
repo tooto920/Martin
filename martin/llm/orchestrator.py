@@ -68,6 +68,11 @@ class Orchestrator:
         self._pending_confirm: ToolCallRequest | None = None
         self._confirm_event = threading.Event()
         self._confirm_result = False
+        self._cancelled = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+        self.confirm(False)
 
     # -- veřejné API ----------------------------------------------------
     def set_system_prompt(self, prompt: str) -> None:
@@ -93,9 +98,11 @@ class Orchestrator:
         images: list[str] | None = None,
         profile: str = "",
         think: bool | None = False,
+        keep_alive: str | None = None,
     ) -> list[ChatMessage]:
         """Spustí konverzační kolo. Vrací rozšířený seznam zpráv."""
         emit = emit or (lambda _e, _d: None)
+        self._cancelled.clear()
         with self._lock:
             conversation = list(messages)
             if self._system_prompt:
@@ -109,9 +116,11 @@ class Orchestrator:
 
         active_tools = tools if routing.requires_tools or tools else None
         for round_index in range(MAX_TOOL_ROUNDS):
+            if self._cancelled.is_set():
+                return conversation
             try:
                 assistant = self._stream_once(
-                    routing, conversation, active_tools, options, images, emit, think
+                    routing, conversation, active_tools, options, images, emit, think, keep_alive
                 )
             except OllamaError as exc:
                 emit(OrchestratorEvent.ERROR, {"message": str(exc)})
@@ -123,6 +132,8 @@ class Orchestrator:
                 return conversation
 
             for call in assistant.tool_calls:
+                if self._cancelled.is_set():
+                    return conversation
                 result = self._run_tool(call, conversation, profile, emit)
                 if result is None:
                     # Uživatel akci odmítl nebo ji zrušil.
@@ -180,9 +191,11 @@ class Orchestrator:
         images: list[str] | None,
         emit: Callable[[OrchestratorEvent, dict[str, Any]], None],
         think: bool | None = False,
+        keep_alive: str | None = None,
     ) -> ChatMessage:
         content_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
+        extra = {"keep_alive": keep_alive} if keep_alive is not None else {}
         for chunk in self._client.chat_stream(
             routing.model,
             conversation,
@@ -190,7 +203,10 @@ class Orchestrator:
             options=options,
             images=images,
             think=think,
+            **extra,
         ):
+            if self._cancelled.is_set():
+                break
             message = chunk.get("message") or {}
             piece = message.get("content") or ""
             if piece:
@@ -234,6 +250,7 @@ class Orchestrator:
                 tool_name=name,
             )
 
+        approved_for_call = False
         if decision.needs_confirmation:
             request = ToolCallRequest(
                 tool=name, args=args, reason=decision.reason, call_id=call_id
@@ -243,8 +260,15 @@ class Orchestrator:
                 emit(OrchestratorEvent.TOOL_RESULT, {"tool": name, "result": "zamítnuto"})
                 return None
             self._policy.approve(name)
+            approved_for_call = True
 
-        _decision, result = self._policy.execute(name, args, profile)
+        try:
+            if self._cancelled.is_set():
+                return None
+            _decision, result = self._policy.execute(name, args, profile)
+        finally:
+            if approved_for_call:
+                self._policy.revoke(name)
         emit(OrchestratorEvent.TOOL_RESULT, {"tool": name, "result": result})
         return ChatMessage(
             role="tool",

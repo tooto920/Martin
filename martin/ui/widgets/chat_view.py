@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QEvent
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -42,6 +42,8 @@ class MessageBubble(QFrame):
         layout.addWidget(header)
 
         self._body = QLabel(text)
+        self._body.setTextFormat(Qt.TextFormat.MarkdownText if self._role == "assistant" else Qt.TextFormat.PlainText)
+        self._text = text
         self._body.setWordWrap(True)
         self._body.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
@@ -59,10 +61,11 @@ class MessageBubble(QFrame):
         self.apply_theme(self._theme)
 
     def set_text(self, text: str) -> None:
+        self._text = text
         self._body.setText(text)
 
     def append_text(self, text: str) -> None:
-        self._body.setText(self._body.text() + text)
+        self.set_text(self._text + text)
 
     def set_footer(self, text: str) -> None:
         self._footer.setText(text)
@@ -97,6 +100,8 @@ class ChatView(QWidget):
         super().__init__()
         self._ctx = ctx
         self._theme = get_theme(ctx.settings.theme)
+        self._streaming = False
+        self._reply: MessageBubble | None = None
         self._build()
         self._connect()
 
@@ -131,12 +136,17 @@ class ChatView(QWidget):
         self._mic = PulseIndicator("#3fb950")
         self._mic.setToolTip("Stav mikrofonu")
         layout.addWidget(self._mic)
+        self._mic_button = QPushButton("Mikrofon")
+        self._mic_button.setToolTip("Zapnout / vypnout mikrofon (Ctrl+Shift+Mezerník)")
+        self._mic_button.clicked.connect(self.mic_toggled.emit)
+        layout.addWidget(self._mic_button)
 
         self._input = QTextEdit()
         self._input.setPlaceholderText(
             "Napiš Martinovi zprávu... (Enter odesílá, Shift+Enter nový řádek)"
         )
         self._input.setFixedHeight(46)
+        self._input.installEventFilter(self)
         self._input.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
@@ -176,14 +186,20 @@ class ChatView(QWidget):
 
     # -- akce -----------------------------------------------------------
     def _on_text_changed(self) -> None:
-        self._send.setEnabled(bool(self._input.toPlainText().strip()))
+        self._send.setEnabled(not self._streaming and bool(self._input.toPlainText().strip()))
+
+    def eventFilter(self, obj, event):
+        if obj is self._input and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+                self._submit()
+                return True
+        return super().eventFilter(obj, event)
 
     def _submit(self) -> None:
         text = self._input.toPlainText().strip()
-        if not text:
+        if not text or self._streaming:
             return
         self._input.clear()
-        self.add_message("user", text)
         self.message_submitted.emit(text)
 
     def add_message(self, role: str, text: str) -> MessageBubble:
@@ -196,32 +212,36 @@ class ChatView(QWidget):
         return bubble
 
     def _on_stream_started(self) -> None:
+        self._streaming = True
+        self._reply = self.add_message("assistant", "")
         self._stop.setVisible(True)
         self._send.setEnabled(False)
 
     def _on_stream_chunk(self, text: str) -> None:
-        if not self._messages.count():
-            self.add_message("assistant", "")
-        bubble = self._messages.itemAt(self._messages.count() - 1).widget()
-        if isinstance(bubble, MessageBubble):
-            bubble.append_text(text)
+        if self._reply is None:
+            self._reply = self.add_message("assistant", "")
+        if self._reply is not None:
+            self._reply.append_text(text)
             self._scroll.verticalScrollBar().setValue(
                 self._scroll.verticalScrollBar().maximum()
             )
 
     def _on_stream_finished(self, info: str = "") -> None:
+        self._streaming = False
         self._stop.setVisible(False)
         self._send.setEnabled(bool(self._input.toPlainText().strip()))
-        bubble = self._messages.itemAt(self._messages.count() - 1).widget()
-        if isinstance(bubble, MessageBubble):
-            bubble.set_footer(info or time.strftime("%H:%M"))
+        if self._reply is not None:
+            self._reply.set_footer(info or time.strftime("%H:%M"))
+        self._reply = None
 
     def _on_error(self, message: str) -> None:
+        self._streaming = False
         self.add_message("assistant", f"⚠️ {message}")
         self._stop.setVisible(False)
         self._send.setEnabled(True)
 
     def _on_listening(self, active: bool) -> None:
+        self._mic_button.setText("Dokončit" if active else "Mikrofon")
         self._mic.set_active(active)
         self._mic.set_color("#f85149" if active else "#3fb950")
 

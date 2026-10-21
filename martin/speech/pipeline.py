@@ -21,7 +21,7 @@ from typing import Any, Callable
 import numpy as np
 
 from martin.core.logging import get_logger
-from martin.speech.whispercpp_backend import WhisperCppBackend
+from martin.speech.whispercpp_backend import WhisperCppBackend, resample
 
 log = get_logger("martin.speech.pipeline")
 
@@ -121,6 +121,7 @@ class VoicePipeline:
         self._cancelled = False
         self._on_event: Callable[[VoiceEvent], None] | None = None
         self._on_text: Callable[[str], None] | None = None
+        self._audio: np.ndarray | None = None
 
     # -- konfigurace ---------------------------------------------------
     def set_callbacks(
@@ -170,16 +171,19 @@ class VoicePipeline:
         pracovním vlákně, aby GUI nikdy nečekalo na ovladač zvuku.
         """
         with self._lock:
-            if self._recording:
-                return True
+            if self._record_thread is not None and self._record_thread.is_alive():
+                return self._recording
             self._recording = True
             self._cancelled = False
             self._timings = VoiceTimings()
             self._stop_record.clear()
+            self._audio = None
+            self._stt.reset_cancel()
 
         start = time.perf_counter()
 
         def run() -> None:
+            recorder = None
             try:
                 recorder = self._recorder_factory()
                 if not recorder.start():
@@ -193,7 +197,12 @@ class VoicePipeline:
                 with self._lock:
                     self._recorder = recorder
                     self._timings.mic_activation_s = time.perf_counter() - start
-                self._emit(Stage.RECORDING, message="Poslouchám...")
+                if not self._stop_record.is_set():
+                    self._emit(Stage.RECORDING, message="Poslouchám...")
+                # One owner opens AND closes the stream. A cancelled late
+                # open must still be closed, never published to another cycle.
+                if not self._stop_record.wait(60):
+                    self._emit(Stage.ERROR, error="Nahrávání ukončeno po 60 sekundách.")
             except Exception as exc:  # noqa: BLE001
                 with self._lock:
                     self._recording = False
@@ -201,6 +210,20 @@ class VoicePipeline:
                     Stage.ERROR,
                     error=f"Mikrofon se nepodařilo zapnout: {exc}",
                 )
+            finally:
+                if recorder is not None:
+                    try:
+                        audio = recorder.stop()
+                        rate = getattr(recorder, "sample_rate", SAMPLE_RATE)
+                        audio = resample(audio, rate, SAMPLE_RATE)
+                        with self._lock:
+                            self._audio = audio
+                            self._timings.record_duration_s = len(audio) / SAMPLE_RATE
+                    except Exception:
+                        log.exception("Uvolnění mikrofonu selhalo")
+                with self._lock:
+                    self._recorder = None
+                    self._recording = False
 
         thread = threading.Thread(target=run, name="martin-mic-open", daemon=True)
         with self._lock:
@@ -211,37 +234,27 @@ class VoicePipeline:
     def stop_recording(self) -> np.ndarray | None:
         """Zastaví nahrávání a vrátí zaznamenané audio."""
         with self._lock:
-            recorder = self._recorder
-            self._recorder = None
+            thread = self._record_thread
             self._recording = False
             self._stop_record.set()
-        if recorder is None:
+        if thread is None:
             return None
-        try:
-            audio = recorder.stop()
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Zastavení nahrávání selhalo: %s", exc)
+        if thread is not threading.current_thread():
+            thread.join(timeout=10)
+        if thread.is_alive():
+            self._emit(Stage.ERROR, error="Zvukový ovladač neodpovídá při zavírání mikrofonu.")
             return None
-        if audio is not None and len(audio):
-            with self._lock:
-                self._timings.record_duration_s = len(audio) / float(SAMPLE_RATE)
-        return audio
+        with self._lock:
+            audio, self._audio = self._audio, None
+            return audio
 
     def cancel(self) -> None:
         """Zruší aktuální hlasový cyklus."""
         with self._lock:
             self._cancelled = True
         self._stop_record.set()
-        recorder = None
         with self._lock:
-            recorder = self._recorder
-            self._recorder = None
             self._recording = False
-        if recorder is not None:
-            try:
-                recorder.stop()
-            except Exception:  # noqa: BLE001
-                pass
         try:
             self._stt.cancel()
         except Exception:  # noqa: BLE001
@@ -252,6 +265,15 @@ class VoicePipeline:
             except Exception:  # noqa: BLE001
                 pass
         self._emit(Stage.CANCELLED, message="Zrušeno.")
+
+    def shutdown(self) -> None:
+        self.cancel()
+        self.stop_recording()
+
+    def update_timings(self, **values: float) -> None:
+        with self._lock:
+            for key, value in values.items():
+                setattr(self._timings, key, value)
 
     def is_cancelled(self) -> bool:
         with self._lock:
@@ -265,7 +287,8 @@ class VoicePipeline:
         se NEPOSÍLÁ - ticho nesmí vymyslet požadavek.
         """
         start = time.perf_counter()
-        self._stt.reset_cancel()
+        if self.is_cancelled():
+            return "", {"error": "Rozpoznání zrušeno."}
         try:
             outcome = self._stt.transcribe(audio)
         except Exception as exc:  # noqa: BLE001
@@ -274,7 +297,7 @@ class VoicePipeline:
             return "", {"error": f"Rozpoznání řeči selhalo: {exc}"}
         with self._lock:
             self._timings.stt_s = time.perf_counter() - start
-        return outcome.text, outcome.to_dict()
+        return ("" if self.is_cancelled() else outcome.text), outcome.to_dict()
 
     def process_recording(self, audio: np.ndarray) -> str:
         """Celý proces od nahrávání k textu.

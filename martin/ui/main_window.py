@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -45,6 +45,7 @@ class MainWindow(QMainWindow):
         self._ctx = app_context
         self._theme: Theme = get_theme(app_context.settings.theme)
         self._floating: FloatingWindow | None = None
+        self._quitting = False
 
         self.setWindowTitle("Martin 2.0")
         self.setMinimumSize(1040, 660)
@@ -194,11 +195,15 @@ class MainWindow(QMainWindow):
         )
         QShortcut(QKeySequence("Ctrl+Shift+T"), self, activated=self._ctx.toggle_theme)
         QShortcut(QKeySequence("Ctrl+Shift+C"), self, activated=self._ctx.stop_speaking)
+        QShortcut(QKeySequence("Ctrl+Q"), self, activated=self._quit_app)
 
     def _connect_signals(self) -> None:
         self._chat.message_submitted.connect(self._ctx.send_message)
         self._chat.stop_requested.connect(self._ctx.stop_speaking)
         self._chat.screenshot_requested.connect(self._on_screenshot_requested)
+        self._chat.mic_toggled.connect(self._ctx.toggle_listening)
+        self._ctx.user_message.connect(lambda text: self._chat.add_message("user", text))
+        self.quick_ask.connect(self._ctx.send_message)
         self.toggle_floating.connect(self._toggle_floating)
         self._ctx.model_changed.connect(self._update_model_label)
         self._ctx.status_message.connect(self._status.show_message)
@@ -227,7 +232,7 @@ class MainWindow(QMainWindow):
             self._floating.show()
             self._tray_floating.setChecked(True)
         self._ctx.settings.floating_window = self._floating.isVisible()
-        self._ctx.settings.save()
+        self._ctx.settings_store.save()
 
     def _on_tray_activated(self, reason: Any) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -271,8 +276,27 @@ class MainWindow(QMainWindow):
             self._floating.refresh_theme()
 
     def _quit_app(self) -> None:
-        self._ctx.shutdown()
+        if self._quitting:
+            return
+        self._quitting = True
+        self.setEnabled(False)
+        self._ctx.status_message.emit("Ukončuji hlas a připojení...")
+        self._ctx.shutdown_finished.connect(self._finish_quit)
+        import threading
+        def cleanup():
+            try:
+                self._ctx.shutdown()
+            finally:
+                self._ctx.shutdown_finished.emit()
+        threading.Thread(target=cleanup, name="martin-shutdown", daemon=True).start()
+
+    def _finish_quit(self) -> None:
+        if self._ctx._chat_jobs:
+            QTimer.singleShot(100, self._finish_quit)
+            return
         self._tray.hide()
+        if self._floating is not None:
+            self._floating.close()
         QApplication.instance().quit()
 
     # -- přehrání událostí ----------------------------------------------

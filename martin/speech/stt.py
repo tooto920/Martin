@@ -247,6 +247,7 @@ class AudioRecorder:
         self._buffer: list[np.ndarray] = []
         self._lock = threading.RLock()
         self._active = False
+        self._buffer_lock = threading.Lock()
 
     def _resolve_device(self) -> int | str | None:
         """Prevede nazev zarizeni na index, nebo vrati None."""
@@ -294,10 +295,14 @@ class AudioRecorder:
                 return False
 
             def callback(indata, frames, time_info, status):  # noqa: ARG001
-                if status:
-                    log.debug("Audio status: %s", status)
-                with self._lock:
-                    self._buffer.append(indata.copy().reshape(-1))
+                # Never wait for the lifecycle lock: stop() waits for this
+                # callback to return. Taking that lock here can deadlock.
+                if self._buffer_lock.acquire(blocking=False):
+                    try:
+                        if len(self._buffer) < 2000:
+                            self._buffer.append(indata.copy().reshape(-1))
+                    finally:
+                        self._buffer_lock.release()
 
             device = self._resolve_device()
             rates = [self._sample_rate]
@@ -309,6 +314,9 @@ class AudioRecorder:
             last_error: Exception | None = None
             for rate in rates:
                 try:
+                    log.info("Otevírám mikrofon: zařízení=%s rate=%s", device, rate)
+                    with self._buffer_lock:
+                        self._buffer.clear()
                     self._stream = sd.InputStream(
                         device=device,
                         channels=1,
@@ -320,10 +328,14 @@ class AudioRecorder:
                     self._stream.start()
                 except Exception as exc:  # noqa: BLE001
                     last_error = exc
+                    if self._stream is not None:
+                        try:
+                            self._stream.close()
+                        except Exception:
+                            log.exception("Zavření neúspěšně otevřeného streamu selhalo")
                     self._stream = None
                     continue
                 self._sample_rate = rate
-                self._buffer.clear()
                 self._active = True
                 log.info("Nahrávání spuštěno: %s Hz, zařízení %s", rate, device)
                 return True
@@ -348,11 +360,13 @@ class AudioRecorder:
             self._active = False
             if self._stream is not None:
                 try:
+                    log.info("Zastavuji mikrofon")
                     self._stream.stop()
+                finally:
                     self._stream.close()
-                except Exception:  # noqa: BLE001
-                    pass
-                self._stream = None
+                    self._stream = None
+                log.info("Mikrofon uvolněn")
+        with self._buffer_lock:
             if not self._buffer:
                 return np.array([], dtype=np.float32)
             audio = np.concatenate(self._buffer).astype(np.float32)
@@ -370,7 +384,7 @@ class AudioRecorder:
 
     def is_speaking(self, threshold: float = 0.02) -> bool:
         """Jednoduchá detekce aktivity hlasu (RMS)."""
-        with self._lock:
+        with self._buffer_lock:
             if not self._buffer:
                 return False
             recent = self._buffer[-3:]

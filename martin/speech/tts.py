@@ -63,6 +63,8 @@ class PiperTTS:
         self._stream: Any | None = None
         self._playing = False
         self._stop_event = threading.Event()
+        self._load_lock = threading.RLock()
+        self._synth_lock = threading.Lock()
 
     # -- konfigurace ---------------------------------------------------
     @property
@@ -115,6 +117,10 @@ class PiperTTS:
 
     # -- model ----------------------------------------------------------
     def _ensure_voice(self) -> Any:
+        with self._load_lock:
+            return self._load_voice()
+
+    def _load_voice(self) -> Any:
         """Nacte hlas (lazy, thread-safe) a vrati ho.
 
         Nacitani trva nekolik sekund, proto se nikdy nedela v GUI
@@ -176,7 +182,7 @@ class PiperTTS:
         """Vygeneruje WAV soubor z textu (in-proces, bez podprocesu)."""
         import time as _time
 
-        text = (text or "").strip()
+        text = to_speech_text(text, max_chars=0)
         if not text:
             return TTSResult(ok=False, error="Prázdný text.")
 
@@ -191,7 +197,8 @@ class PiperTTS:
 
         start = _time.perf_counter()
         try:
-            samples = self._synthesize_samples(voice, text)
+            with self._synth_lock:
+                samples = self._synthesize_samples(voice, text)
         except Exception as exc:  # noqa: BLE001
             log.warning("Syntéza selhala: %s", exc)
             return TTSResult(ok=False, error=f"Syntéza selhala: {exc}")
@@ -341,18 +348,8 @@ class PiperTTS:
         kód aplikace nezhroutil.
         """
         self._stop_event.set()
-        with self._lock:
-            stream = self._stream
-            self._stream = None
-        if stream is not None:
-            try:
-                stream.abort()
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                stream.close()
-            except Exception:  # noqa: BLE001
-                pass
+        # The playback owner closes its stream in its finally block. Closing
+        # it here races a native stream.write() on that owner's thread.
 
     @property
     def is_playing(self) -> bool:

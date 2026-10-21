@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
@@ -55,6 +56,17 @@ class OllamaClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self._client = httpx.Client(timeout=timeout)
+        self._responses: set[httpx.Response] = set()
+        self._response_lock = threading.Lock()
+
+    def cancel_active(self) -> None:
+        with self._response_lock:
+            responses = list(self._responses)
+        for response in responses:
+            try:
+                response.close()
+            except Exception:
+                pass
 
     def close(self) -> None:
         try:
@@ -95,10 +107,15 @@ class OllamaClient:
     def model_capabilities(self, name: str) -> set[str]:
         """Vrací schopnosti modelu (vision, tools, ...)."""
         try:
+            response = self._client.post(f"{self.base_url}/api/show", json={"model": name}, timeout=10)
+            response.raise_for_status()
+            capabilities = response.json().get("capabilities")
+            if capabilities is not None:
+                return set(capabilities)
             for model in self.list_models():
                 if model.get("name") == name:
                     return set(model.get("capabilities") or [])
-        except OllamaError:
+        except (OllamaError, httpx.HTTPError, ValueError):
             pass
         return set()
 
@@ -129,6 +146,7 @@ class OllamaClient:
         options: dict[str, Any] | None = None,
         images: list[str] | None = None,
         think: bool | None = False,
+        keep_alive: str | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Streamuje odpověď z Ollama po jednotlivých chunkách.
 
@@ -143,12 +161,17 @@ class OllamaClient:
         }
         if think is not None:
             payload["think"] = think
+        if keep_alive is not None:
+            payload["keep_alive"] = keep_alive
         if tools:
             payload["tools"] = tools
         if options:
             payload["options"] = options
         if images:
-            payload["images"] = images
+            for message in reversed(payload["messages"]):
+                if message["role"] == "user":
+                    message["images"] = images
+                    break
 
         try:
             with self._client.stream(
@@ -158,20 +181,32 @@ class OllamaClient:
                 timeout=self.timeout,
             ) as response:
                 response.raise_for_status()
+                with self._response_lock:
+                    self._responses.add(response)
+                completed = False
                 for line in response.iter_lines():
                     if not line:
                         continue
                     try:
                         chunk = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
+                    except json.JSONDecodeError as exc:
+                        raise OllamaError("Ollama vrátila neplatný stream.") from exc
+                    if not isinstance(chunk, dict):
+                        raise OllamaError("Ollama vrátila neplatný stream.")
                     if chunk.get("error"):
                         raise OllamaError(str(chunk["error"]))
                     yield chunk
                     if chunk.get("done"):
+                        completed = True
                         break
+                if not completed:
+                    raise OllamaError("Odpověď Ollama byla předčasně přerušena.")
         except httpx.HTTPError as exc:
             raise OllamaError(f"Chyba spojení s Ollama: {exc}") from exc
+        finally:
+            if "response" in locals():
+                with self._response_lock:
+                    self._responses.discard(response)
 
     def chat(
         self,

@@ -86,7 +86,7 @@ class StreamingTTS:
         self._max_queue = max_queue
         self._lock = threading.RLock()
         self._buffer = ""
-        self._queue: list[SynthesizedChunk] = []
+        self._queue: list[str] = []
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._done = threading.Event()
@@ -97,6 +97,8 @@ class StreamingTTS:
         self._dropped = 0
         self._samples_played = 0
         self._on_playback_start: Any = None
+        self._condition = threading.Condition(self._lock)
+        self._input_done = False
 
     # -- stav -----------------------------------------------------------
     @property
@@ -125,29 +127,30 @@ class StreamingTTS:
         Prazdne vety se preskakuji, takze text rozdeleny na vice
         casti (streaming) dava stejny vysledek jako cely text.
         """
-        if not text:
+        if not text or self._stop.is_set() or self._input_done:
             return
         # to_speech_text text orezava - koncova mezera mezi chunky by
         # se ztratila a slova by se slepila ("spustimMicrosoft").
-        clean = to_speech_text(text, max_chars=0, keep_trailing_space=True)
-        if not clean:
-            return
         with self._lock:
             if self._start_time == 0.0:
                 self._start_time = time.perf_counter()
-            self._buffer += clean
+            self._buffer += text
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, name="martin-stream-tts", daemon=True)
+                self._thread.start()
         self._extract_sentences(final=False)
 
     def finish(self) -> None:
         """Ukonci vstup - zpracuje zbytk buffera a spusti prehravani."""
         with self._lock:
-            if self._thread is not None:
+            if self._input_done or self._stop.is_set():
                 return
-            self._extract_sentences(final=True)
-            self._thread = threading.Thread(
-                target=self._run, name="martin-stream-tts", daemon=True
-            )
-        self._thread.start()
+        self._extract_sentences(final=True)
+        with self._condition:
+            self._input_done = True
+            if self._thread is None:
+                self._done.set()
+            self._condition.notify_all()
 
     def wait(self, timeout: float = 120.0) -> bool:
         """Ceka na dokonceni prehravani."""
@@ -158,20 +161,26 @@ class StreamingTTS:
         self._stop.set()
         with self._lock:
             self._queue.clear()
+            self._condition.notify_all()
         try:
             self._tts.stop()
         except Exception:  # noqa: BLE001
             pass
-        self._done.set()
+        if self._thread is None:
+            self._done.set()
 
     # -- interni --------------------------------------------------------
     def _extract_sentences(self, final: bool) -> None:
         """Rozdeli buffer na vety a naplanuje syntézu."""
         with self._lock:
             buffer = self._buffer
+            if not final and "```" in buffer:
+                return
             self._buffer = ""
         if not buffer:
             return
+        if final and "```" in buffer:
+            buffer = to_speech_text(buffer, max_chars=0)
         sentences, leftover = _split_sentences(buffer, final=final)
         with self._lock:
             # Zbytek neukoncene vety se vrati do bufferu. Trailing
@@ -184,11 +193,20 @@ class StreamingTTS:
                 continue
             if self._stop.is_set():
                 return
-            self._synthesize(sentence)
+            with self._condition:
+                while len(self._queue) >= self._max_queue and not self._stop.is_set():
+                    self._condition.wait(0.1)
+                if self._stop.is_set():
+                    return
+                self._queue.append(sentence)
+                self._condition.notify_all()
 
-    def _synthesize(self, sentence: str) -> None:
+    def _synthesize(self, sentence: str) -> SynthesizedChunk | None:
         """Syntetizuje jednu vetu (blokujici - bezi ve vlakne)."""
         try:
+            sentence = to_speech_text(sentence, max_chars=0)
+            if not sentence:
+                return None
             result = self._tts.synthesize(sentence)
         except Exception as exc:  # noqa: BLE001
             log.warning("Syntéza věty selhala: %s", exc)
@@ -214,27 +232,21 @@ class StreamingTTS:
             index=self._index,
         )
         self._index += 1
-        with self._lock:
-            self._queue.append(chunk)
-            # Fronta je omezena - stare vety zahazujeme, aby se
-            # prehrani nesrazilo s odpovedi.
-            while len(self._queue) > self._max_queue:
-                dropped = self._queue.pop(0)
-                self._dropped += 1
-                log.debug("Zahozena veta pri prehrani: %s", dropped.text[:40])
-        if self._first_audio_s is None and self._start_time:
-            self._first_audio_s = time.perf_counter() - self._start_time
+        return chunk
 
     def _run(self) -> None:
         """Prehraje frontu vet."""
         try:
             while not self._stop.is_set():
-                with self._lock:
-                    chunk = self._queue.pop(0) if self._queue else None
-                if chunk is None:
-                    if self._stop.is_set():
+                with self._condition:
+                    while not self._queue and not self._input_done and not self._stop.is_set():
+                        self._condition.wait()
+                    if self._stop.is_set() or (not self._queue and self._input_done):
                         break
-                    time.sleep(0.02)
+                    sentence = self._queue.pop(0)
+                    self._condition.notify_all()
+                chunk = self._synthesize(sentence)
+                if chunk is None or self._stop.is_set():
                     continue
                 if self._on_playback_start is not None and self._samples_played == 0:
                     try:
@@ -262,6 +274,8 @@ class StreamingTTS:
             with sd.OutputStream(
                 samplerate=chunk.sample_rate, channels=1, dtype="int16", device=device
             ) as stream:
+                if self._first_audio_s is None and self._start_time:
+                    self._first_audio_s = time.perf_counter() - self._start_time
                 block = chunk.sample_rate // 20
                 offset = 0
                 total = len(chunk.samples)
@@ -322,7 +336,7 @@ def _ends_sentence(text: str) -> bool:
     "napr. to znamena" -> False (zkratka)
     "p. Kral"        -> False (inicial)
     """
-    stripped = text.rstrip()
+    stripped = text.rstrip().rstrip('*_`"”»)]')
     if not stripped:
         return False
     if stripped[-1] not in ".!?":

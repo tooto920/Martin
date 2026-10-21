@@ -132,6 +132,7 @@ class WhisperCppBackend:
         self._load_lock = threading.Lock()
         self._cancel = threading.Event()
         self._last_load_s = 0.0
+        self._inference_lock = threading.RLock()
 
     # -- konfigurace ---------------------------------------------------
     @property
@@ -144,14 +145,15 @@ class WhisperCppBackend:
 
     def set_model(self, model_size: str) -> None:
         """Změní model - načte se při příštím použití."""
-        with self._lock:
+        with self._inference_lock, self._lock:
             if model_size != self._model_size:
                 self._model_size = model_size
                 self._model = None
 
     def set_language(self, language: str) -> None:
-        with self._lock:
+        with self._inference_lock, self._lock:
             self._language = language
+            self._model = None
 
     def set_silence_threshold(self, threshold: float) -> None:
         with self._lock:
@@ -252,7 +254,8 @@ class WhisperCppBackend:
         Volat z vlakna - nikdy z GUI vlakna.
         """
         try:
-            self._ensure_model()
+            with self._inference_lock:
+                self._ensure_model()
             return True
         except Exception as exc:  # noqa: BLE001
             log.warning("Warm-up whisper.cpp selhal: %s", exc)
@@ -260,11 +263,19 @@ class WhisperCppBackend:
 
     def unload(self) -> None:
         """Uvolni model z pameti."""
-        with self._lock:
+        with self._inference_lock, self._lock:
             self._model = None
 
     # -- rozpoznavani ---------------------------------------------------
     def transcribe(
+        self, audio: np.ndarray, sample_rate: int = SAMPLE_RATE,
+    ) -> TranscriptionOutcome:
+        # pywhispercpp keeps mutable decoding parameters and a single native
+        # context. Do not infer or unload concurrently on this context.
+        with self._inference_lock:
+            return self._transcribe(audio, sample_rate)
+
+    def _transcribe(
         self,
         audio: np.ndarray,
         sample_rate: int = SAMPLE_RATE,
@@ -283,6 +294,11 @@ class WhisperCppBackend:
             return TranscriptionOutcome("", False, "Prázdné audio.", diagnostics)
 
         data = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if sample_rate <= 0 or not np.all(np.isfinite(data)) or np.max(np.abs(data)) > 1.01:
+            diagnostics.rejected_reason = "neplatné audio"
+            return TranscriptionOutcome("", False, "Neplatná zvuková data.", diagnostics)
+        if self._cancel.is_set():
+            return TranscriptionOutcome("", False, "Rozpoznání zrušeno.", diagnostics)
         if sample_rate and sample_rate != SAMPLE_RATE:
             data = resample(data, sample_rate, SAMPLE_RATE)
 
@@ -327,10 +343,15 @@ class WhisperCppBackend:
         try:
             if use_vad:
                 segments = model.transcribe(
-                    data, vad=True, vad_model_path=str(vad_path)
+                    data, vad=True, vad_model_path=str(vad_path),
+                    language=self._language if self._language != "auto" else "",
+                    no_context=True, abort_callback=self._cancel.is_set,
                 )
             else:
-                segments = model.transcribe(data)
+                # Noise must never become an executable desktop command when
+                # the speech detector is missing.
+                diagnostics.rejected_reason = "chybí VAD"
+                return TranscriptionOutcome("", False, "Chybí model VAD pro bezpečné rozpoznání.", diagnostics)
         except Exception as exc:  # noqa: BLE001
             diagnostics.rejected_reason = "chyba transkripce"
             diagnostics.total_s = time.perf_counter() - start
