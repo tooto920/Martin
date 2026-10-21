@@ -157,14 +157,19 @@ class HardwareManager:
         }
 
     def _unload_model(self, url: str, model: str) -> tuple[bool, str]:
-        """Pošle keep_alive=0, aby Ollama uvolnila VRAM."""
+        """Pošle keep_alive=0, aby Ollama uvolnila VRAM.
+
+        Zpráva je prázdná - nechceme generovat žádný text, jen model
+        odpojit. S neprázdnou zprávou by Ollama generovala odpověď,
+        což trvá desítky sekund (a u režimu přemýšlení i minuty).
+        """
         try:
-            with httpx.Client(timeout=20.0) as client:
+            with httpx.Client(timeout=30.0) as client:
                 response = client.post(
                     f"{url}/api/chat",
                     json={
                         "model": model,
-                        "messages": [{"role": "user", "content": "ping"}],
+                        "messages": [],
                         "stream": False,
                         "keep_alive": 0,
                     },
