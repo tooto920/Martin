@@ -123,7 +123,7 @@ class HardwareManager:
     ) -> dict[str, Any]:
         """Přepne profil a uplatní jeho požadavky na VRAM.
 
-        Vrací slovník s výsledkem a OVĚŘENÝM stavem paměti.
+        Vrací stav profilu a výslovně rozlišuje ověření od požadavku.
         """
         name = name.strip().upper()
         if name not in PROFILE_DEFS:
@@ -139,7 +139,7 @@ class HardwareManager:
         if definition.keep_alive == "0" and local_model:
             released, detail = self._unload_model(url, local_model)
         elif local_model:
-            detail = "Model zůstává rezidentní v paměti GPU."
+            detail = "Další požadavky použijí nastavení tohoto profilu."
 
         with self._lock:
             self._profile = name
@@ -153,7 +153,7 @@ class HardwareManager:
             "model_unloaded": released,
             "vram_free_mb": round(snapshot.vram_free_mb),
             "vram_total_mb": round(snapshot.gpu_memory_total_mb),
-            "verified": True,
+            "verified": released,
         }
 
     def _unload_model(self, url: str, model: str) -> tuple[bool, str]:
@@ -175,9 +175,16 @@ class HardwareManager:
                     },
                 )
                 response.raise_for_status()
+                status = client.get(f"{url}/api/ps")
+                status.raise_for_status()
+                loaded = status.json().get("models", [])
+                if any(model in (item.get("name"), item.get("model")) for item in loaded):
+                    return False, "Požadavek na odpojení odeslán, ale model je podle /api/ps stále načtený."
         except httpx.HTTPError as exc:
             return False, f"Nepodařilo se uvolnit model z VRAM: {exc}"
-        return True, "Model byl odpojen od GPU (keep_alive=0)."
+        except (ValueError, TypeError, AttributeError) as exc:
+            return False, f"Stav modelu se nepodařilo ověřit: {exc}"
+        return True, "Ollama /api/ps potvrzuje, že model již není načtený. Fyzické využití VRAM se měří samostatně."
 
     def should_use_cloud(self, snapshot: SystemSnapshot | None = None) -> bool:
         """Rozhodne, zda je vhodný čas na cloud (kvůli vytížení)."""

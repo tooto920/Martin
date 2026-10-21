@@ -47,7 +47,8 @@ def list_monitors() -> list[dict[str, Any]]:
                     "height": m["height"],
                     "left": m["left"],
                     "top": m["top"],
-                    "primary": i == 0,
+                    "primary": i > 0 and m["left"] == 0 and m["top"] == 0,
+                    "virtual": i == 0,
                 }
                 for i, m in enumerate(sct.monitors)
             ]
@@ -104,6 +105,22 @@ class ScreenCapture:
 
         user32 = ctypes.windll.user32
         gdi32 = ctypes.windll.gdi32
+        # Win64 HDC/HBITMAP values must never pass through ctypes' default int.
+        user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        user32.GetWindowDC.argtypes = [wintypes.HWND]
+        user32.GetWindowDC.restype = wintypes.HDC
+        user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
+        user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+        gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+        gdi32.CreateCompatibleDC.restype = wintypes.HDC
+        gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+        gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
+        gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+        gdi32.SelectObject.restype = wintypes.HGDIOBJ
+        gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+        gdi32.DeleteDC.argtypes = [wintypes.HDC]
+        gdi32.GetDIBits.argtypes = [wintypes.HDC, wintypes.HBITMAP, wintypes.UINT,
+                                  wintypes.UINT, ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT]
 
         hwnd = self._find_window(title)
         if not hwnd:
@@ -122,9 +139,11 @@ class ScreenCapture:
             return None, {"ok": False, "error": "DC okna se nepodařilo získat."}
         mem_dc = gdi32.CreateCompatibleDC(window_dc)
         bitmap = gdi32.CreateCompatibleBitmap(window_dc, width, height)
-        gdi32.SelectObject(mem_dc, bitmap)
+        previous = gdi32.SelectObject(mem_dc, bitmap)
         try:
-            user32.PrintWindow(hwnd, mem_dc, 2)
+            if not user32.PrintWindow(hwnd, mem_dc, 2):
+                return None, {"ok": False, "error": "Windows odmítl snímek tohoto okna."}
+            gdi32.SelectObject(mem_dc, previous)
             class BITMAPINFOHEADER(ctypes.Structure):
                 _fields_ = [
                     ("biSize", wintypes.DWORD),
@@ -148,15 +167,18 @@ class ScreenCapture:
             header.biBitCount = 32
             header.biCompression = 0
             buffer = ctypes.create_string_buffer(width * height * 4)
-            gdi32.GetDIBits(
+            rows = gdi32.GetDIBits(
                 mem_dc, bitmap, 0, height, buffer, ctypes.byref(header), 0
             )
+            if rows != height:
+                return None, {"ok": False, "error": "Neúplný snímek okna."}
             image = Image.frombuffer(
                 "RGBA", (width, height), buffer, "raw", "BGRA", 0, 1
             ).convert("RGB")
         except Exception as exc:  # noqa: BLE001
             return None, {"ok": False, "error": f"Snímek okna selhal: {exc}"}
         finally:
+            gdi32.SelectObject(mem_dc, previous)
             gdi32.DeleteObject(bitmap)
             gdi32.DeleteDC(mem_dc)
             user32.ReleaseDC(hwnd, window_dc)
@@ -200,26 +222,9 @@ class ScreenCapture:
 
     @staticmethod
     def _find_window(title: str) -> int:
-        import ctypes
-
-        user32 = ctypes.windll.user32
-        needle = title.strip().lower()
-        found: list[int] = []
-
-        def callback(hwnd: int, _lparam: int) -> bool:
-            if not user32.IsWindowVisible(hwnd):
-                return True
-            length = user32.GetWindowTextLengthW(hwnd)
-            if length == 0:
-                return True
-            buffer = ctypes.create_unicode_buffer(length + 1)
-            user32.GetWindowTextW(hwnd, buffer, length + 1)
-            if needle in buffer.value.lower():
-                found.append(hwnd)
-            return True
-
-        user32.EnumWindows(callback, 0)
-        return found[0] if found else 0
+        from martin.system.windows import WindowManager
+        window = WindowManager.find_window(title)
+        return window.hwnd if window else 0
 
     @staticmethod
     def to_base64(data: bytes) -> str:

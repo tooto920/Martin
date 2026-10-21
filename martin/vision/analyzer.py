@@ -83,7 +83,7 @@ class VisionAnalyzer:
                 pass
 
         messages = [
-            ChatMessage(role="system", content=VISION_SYSTEM_PROMPT),
+            ChatMessage(role="system", content=VISION_SYSTEM_PROMPT + "\n" + UNTRUSTED_CONTENT_WARNING),
             ChatMessage(
                 role="user",
                 content=(

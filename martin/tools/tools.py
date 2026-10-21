@@ -16,7 +16,7 @@ from typing import Any
 from martin.core.logging import get_logger
 from martin.security.engine import ToolRegistry
 from martin.security.policy import SecurityLevel
-from martin.system.apps import AppRegistry
+from martin.system.apps import AppRegistry, BLOCKED_EXECUTABLES
 from martin.system.stats import collect_stats
 from martin.system.windows import VolumeController, WindowManager
 
@@ -57,12 +57,21 @@ WINDOWS_SETTINGS_PAGES = {
 }
 
 
+def _folder_target(path_text: str) -> Path:
+    target = Path(os.path.expandvars(path_text)).expanduser()
+    if not target.is_absolute():
+        for root in ALLOWED_FOLDER_ROOTS:
+            if target == Path(root.name):
+                return root.resolve()
+    return target.resolve()
+
+
 def _valid_folder(path_text: str) -> str | None:
     """Ověří, že složka je existující a povolená."""
     if not path_text or not path_text.strip():
         return "Složka není zadána."
     try:
-        target = Path(os.path.expandvars(path_text)).expanduser().resolve()
+        target = _folder_target(path_text)
     except (OSError, RuntimeError) as exc:
         return f"Neplatná cesta: {exc}"
     if not target.exists():
@@ -122,7 +131,7 @@ class ToolSet:
             "Spustí nainstalovanou aplikaci nebo hru podle názvu.",
             SecurityLevel.SAFE,
             self._open_app,
-            validator=_valid_app_name,
+            validator=lambda args: _valid_app_name(str(args.get("name", ""))),
             parameters={
                 "type": "object",
                 "properties": {
@@ -376,7 +385,7 @@ class ToolSet:
             }
         try:
             if entry.kind == "steam":
-                subprocess.Popen(["steam", entry.target], close_fds=True)
+                os.startfile(entry.target)  # registered steam://rungameid URI
             elif entry.kind == "url":
                 os.startfile(entry.target)  # noqa: S606 - cíl je z registru/start menu
             else:
@@ -386,6 +395,8 @@ class ToolSet:
                         "ok": False,
                         "error": f"Soubor aplikace nebyl nalezen: {entry.target}",
                     }
+                if target.name.lower() in BLOCKED_EXECUTABLES or target.suffix.lower() != ".exe":
+                    return {"ok": False, "error": "Cíl aplikace není povolený spustitelný soubor."}
                 subprocess.Popen([str(target)], close_fds=True)
         except OSError as exc:
             return {"ok": False, "error": f"Spuštění selhalo: {exc}"}
@@ -402,16 +413,10 @@ class ToolSet:
         }
 
     def _open_folder(self, path: str) -> dict[str, Any]:
-        expanded = os.path.expandvars(path).expanduser()
-        candidate = Path(expanded)
-        if not candidate.is_absolute():
-            for root in ALLOWED_FOLDER_ROOTS:
-                if not root.exists():
-                    continue
-                guess = root / expanded
-                if guess.exists():
-                    candidate = guess
-                    break
+        problem = _valid_folder(path)
+        if problem:
+            return {"ok": False, "error": problem}
+        candidate = _folder_target(path)
         try:
             os.startfile(str(candidate))  # noqa: S606 - cesta ověřena validátorem
         except OSError as exc:

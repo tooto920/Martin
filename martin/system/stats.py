@@ -72,6 +72,7 @@ def _gpu_stats() -> tuple[str, float, float, float, float | None]:
             text=True,
             timeout=6,
             check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode == 0 and result.stdout.strip():
             line = result.stdout.strip().splitlines()[0]

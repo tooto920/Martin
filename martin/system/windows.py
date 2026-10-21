@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ctypes
+from ctypes import wintypes
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,6 +13,18 @@ from martin.core.logging import get_logger
 log = get_logger("martin.system.windows")
 
 user32 = ctypes.windll.user32
+ENUM_WINDOWS_PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+user32.EnumWindows.argtypes = [ENUM_WINDOWS_PROC, wintypes.LPARAM]
+user32.EnumWindows.restype = wintypes.BOOL
+for _name in ("IsWindow", "IsWindowVisible", "IsIconic", "SetForegroundWindow"):
+    getattr(user32, _name).argtypes = [wintypes.HWND]
+    getattr(user32, _name).restype = wintypes.BOOL
+user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.PostMessageW.restype = wintypes.BOOL
 
 
 @dataclass(slots=True)
@@ -75,7 +89,7 @@ class WindowManager:
             )
             return True
 
-        user32.EnumWindows(callback, 0)
+        user32.EnumWindows(ENUM_WINDOWS_PROC(callback), 0)
         return windows
 
     @staticmethod
@@ -98,8 +112,7 @@ class WindowManager:
         """Přinese okno do popředí a obnoví z minimalizace."""
         try:
             user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-            user32.SetForegroundWindow(hwnd)
-            return True
+            return bool(user32.SetForegroundWindow(hwnd))
         except Exception as exc:  # noqa: BLE001
             log.warning("Zaměření okna selhalo: %s", exc)
             return False
@@ -115,8 +128,7 @@ class WindowManager:
     @staticmethod
     def close(hwnd: int) -> bool:
         try:
-            user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
-            return True
+            return bool(user32.PostMessageW(hwnd, 0x0010, 0, 0))  # WM_CLOSE
         except Exception:  # noqa: BLE001
             return False
 
@@ -137,6 +149,25 @@ class VolumeController:
         self._available = False
         self._init_backend()
 
+    @contextmanager
+    def _endpoint(self):
+        # COM interfaces belong to the thread/apartment that created them.
+        import comtypes
+        comtypes.CoInitialize()
+        try:
+            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+            devices = AudioUtilities.GetSpeakers()
+            interface = getattr(devices, "EndpointVolume", None)
+            if interface is None:
+                interface = ctypes.cast(
+                    devices.Activate(IAudioEndpointVolume._iid_, 0, None),
+                    ctypes.POINTER(IAudioEndpointVolume),
+                )
+            yield interface
+            del interface, devices
+        finally:
+            comtypes.CoUninitialize()
+
     def _init_backend(self) -> None:
         """Inicializuje pycaw backend.
 
@@ -145,17 +176,8 @@ class VolumeController:
         Podporujeme obe.
         """
         try:
-            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume  # type: ignore
-
-            devices = AudioUtilities.GetSpeakers()
-            interface = getattr(devices, "EndpointVolume", None)
-            if interface is not None:
-                # Nova API (pycaw >= 2025).
-                self._backend = interface
-            else:
-                # Stara API.
-                interface = devices.Activate(IAudioEndpointVolume._iid_, 0, None)
-                self._backend = interface
+            with self._endpoint():
+                pass
             self._available = True
             log.info("Ovládání hlasitosti: pycaw")
         except Exception as exc:  # noqa: BLE001
@@ -170,9 +192,10 @@ class VolumeController:
 
     def get_volume(self) -> int | None:
         """Aktuální hlasitost v procentech."""
-        if self._backend is not None:
+        if self._available:
             try:
-                level = self._backend.GetMasterVolumeLevelScalar()
+                with self._endpoint() as endpoint:
+                    level = endpoint.GetMasterVolumeLevelScalar()
                 return int(round(level * 100))
             except Exception:  # noqa: BLE001
                 pass
@@ -181,9 +204,10 @@ class VolumeController:
     def set_volume(self, percent: int) -> bool:
         """Nastaví hlasitost na 0-100 %."""
         percent = max(0, min(100, int(percent)))
-        if self._backend is not None:
+        if self._available:
             try:
-                self._backend.SetMasterVolumeLevelScalar(percent / 100.0, None)
+                with self._endpoint() as endpoint:
+                    endpoint.SetMasterVolumeLevelScalar(percent / 100.0, None)
                 return True
             except Exception as exc:  # noqa: BLE001
                 log.warning("Nastavení hlasitosti selhalo: %s", exc)
@@ -219,8 +243,8 @@ class VolumeController:
     def mute(self, muted: bool = True) -> bool:
         """Ztlumí nebo odtlumí zvuk."""
         try:
-            user32.keybd_event(self._KEY_VOLUME_MUTE, 0, 0, 0)
-            user32.keybd_event(self._KEY_VOLUME_MUTE, 0, 2, 0)
+            with self._endpoint() as endpoint:
+                endpoint.SetMute(bool(muted), None)
             return True
         except Exception:  # noqa: BLE001
             return False

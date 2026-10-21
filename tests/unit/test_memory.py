@@ -95,16 +95,15 @@ class TestMemoryManager:
     def test_context_for_builds_prompt_context(self, memory_store):
         manager = MemoryManager(memory_store)
         manager.remember("Lukas pouziva MSFS 2024", "projekt")
-        context = manager.context_for("co hraju")
+        context = manager.context_for("MSFS")
         assert "MSFS 2024" in context
         assert "paměti" in context.lower()
 
-    def test_context_falls_back_to_recent_when_no_match(self, memory_store):
-        """Bez textove shody se pouzije poslednich nekolik zaznamu."""
+    def test_context_does_not_inject_unrelated_recent_memory(self, memory_store):
         manager = MemoryManager(memory_store)
         manager.remember("něco o rybách", "jine")
         context = manager.context_for("letadlo")
-        assert "rybách" in context
+        assert context == ""
 
     def test_context_empty_when_memory_is_empty(self, memory_store):
         manager = MemoryManager(memory_store)

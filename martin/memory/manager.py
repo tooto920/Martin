@@ -36,11 +36,9 @@ class MemoryManager:
         Kontext je vždy OMEZENÝ - nikdy se do něj nenačítá celá
         databáze. Sestává se z:
           1. vzpomínek nalezených fulltextovým vyhledáváním,
-          2. připnutých vzpomínek (uživatel označil jako důležité),
-          3. pokud nic nenalezeno, z posledních několika záznamů.
+          2. připnutých vzpomínek (uživatel označil jako důležité).
 
-        Bod 3 slouží jako rozumná záloha pro dotazy, které nemají
-        společná slova se záznamy (např. "co hraju" vs. "MSFS 2024").
+        Nesouvisející poslední záznamy nesmí kontaminovat nový dotaz.
         """
         entries = list(self._store.search(query, limit=limit))
         seen = {e.id for e in entries}
@@ -50,13 +48,6 @@ class MemoryManager:
             if entry.pinned and entry.id not in seen:
                 seen.add(entry.id)
                 entries.append(entry)
-
-        # Záloha: poslední záznamy, pokud dosud nic relevantního.
-        if not entries:
-            for entry in self._store.list(limit=3):
-                if entry.id not in seen:
-                    seen.add(entry.id)
-                    entries.append(entry)
 
         if not entries:
             return ""
