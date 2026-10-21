@@ -42,16 +42,16 @@ class MessageBubble(QFrame):
         layout.addWidget(header)
 
         self._body = QLabel(text)
-        self._body.setTextFormat(Qt.TextFormat.MarkdownText if self._role == "assistant" else Qt.TextFormat.PlainText)
+        self._body.setTextFormat(
+            Qt.TextFormat.MarkdownText if self._role == "assistant" else Qt.TextFormat.PlainText
+        )
         self._text = text
         self._body.setWordWrap(True)
         self._body.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
             | Qt.TextInteractionFlag.LinksAccessibleByMouse
         )
-        self._body.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
-        )
+        self._body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         layout.addWidget(self._body)
 
         self._footer = QLabel("")
@@ -112,9 +112,7 @@ class ChatView(QWidget):
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
-        self._scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         self._content = QWidget()
@@ -147,9 +145,7 @@ class ChatView(QWidget):
         )
         self._input.setFixedHeight(46)
         self._input.installEventFilter(self)
-        self._input.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
+        self._input.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         layout.addWidget(self._input, 1)
 
         self._shot_button = QPushButton("👁")
@@ -190,14 +186,17 @@ class ChatView(QWidget):
 
     def eventFilter(self, obj, event):
         if obj is self._input and event.type() == QEvent.Type.KeyPress:
-            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (
+                event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+            ):
                 self._submit()
                 return True
         return super().eventFilter(obj, event)
 
     def _submit(self) -> None:
         text = self._input.toPlainText().strip()
-        if not text or self._streaming:
+        busy = getattr(self._ctx, "_busy", None)
+        if not text or self._streaming or (busy is not None and busy.is_set()):
             return
         self._input.clear()
         self.message_submitted.emit(text)
@@ -206,9 +205,7 @@ class ChatView(QWidget):
         """Přidá bublinku do chatu."""
         bubble = MessageBubble(role, text, self._theme)
         self._messages.addWidget(bubble)
-        self._scroll.verticalScrollBar().setValue(
-            self._scroll.verticalScrollBar().maximum()
-        )
+        self._scroll.verticalScrollBar().setValue(self._scroll.verticalScrollBar().maximum())
         return bubble
 
     def _on_stream_started(self) -> None:
@@ -222,9 +219,7 @@ class ChatView(QWidget):
             self._reply = self.add_message("assistant", "")
         if self._reply is not None:
             self._reply.append_text(text)
-            self._scroll.verticalScrollBar().setValue(
-                self._scroll.verticalScrollBar().maximum()
-            )
+            self._scroll.verticalScrollBar().setValue(self._scroll.verticalScrollBar().maximum())
 
     def _on_stream_finished(self, info: str = "") -> None:
         self._streaming = False

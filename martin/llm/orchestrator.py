@@ -74,6 +74,9 @@ class Orchestrator:
         self._cancelled.set()
         self.confirm(False)
 
+    def prepare(self):
+        self._cancelled.clear()
+
     # -- veřejné API ----------------------------------------------------
     def set_system_prompt(self, prompt: str) -> None:
         self._system_prompt = prompt
@@ -102,19 +105,16 @@ class Orchestrator:
     ) -> list[ChatMessage]:
         """Spustí konverzační kolo. Vrací rozšířený seznam zpráv."""
         emit = emit or (lambda _e, _d: None)
-        self._cancelled.clear()
         with self._lock:
             conversation = list(messages)
             if self._system_prompt:
                 conversation.insert(0, ChatMessage(role="system", content=self._system_prompt))
 
-        routing = self._route(
-            conversation, local_model, cloud_model, local_only, allow_cloud, emit
-        )
+        routing = self._route(conversation, local_model, cloud_model, local_only, allow_cloud, emit)
         if routing is None:
             return conversation
 
-        active_tools = tools if routing.requires_tools or tools else None
+        active_tools = tools if routing.requires_tools or routing.requires_vision else None
         for round_index in range(MAX_TOOL_ROUNDS):
             if self._cancelled.is_set():
                 return conversation
@@ -123,11 +123,20 @@ class Orchestrator:
                     routing, conversation, active_tools, options, images, emit, think, keep_alive
                 )
             except OllamaError as exc:
-                emit(OrchestratorEvent.ERROR, {"message": str(exc)})
+                if not self._cancelled.is_set():
+                    emit(OrchestratorEvent.ERROR, {"message": str(exc)})
                 return conversation
 
             conversation.append(assistant)
             if not assistant.tool_calls:
+                if not assistant.content.strip() and not self._cancelled.is_set():
+                    emit(
+                        OrchestratorEvent.ERROR,
+                        {
+                            "message": "Model vrátil prázdnou odpověď. Zkus požadavek znovu nebo otestuj jiný model v nastavení."
+                        },
+                    )
+                    return conversation
                 emit(OrchestratorEvent.DONE, {"message": assistant.content})
                 return conversation
 
@@ -161,14 +170,10 @@ class Orchestrator:
         allow_cloud: bool,
         emit: Callable[[OrchestratorEvent, dict[str, Any]], None],
     ) -> RoutingDecision | None:
-        last_user = next(
-            (m for m in reversed(conversation) if m.role == "user"), None
-        )
+        last_user = next((m for m in reversed(conversation) if m.role == "user"), None)
         text = last_user.content if last_user else ""
         try:
-            decision = self._router.route(
-                text, local_model, cloud_model, local_only, allow_cloud
-            )
+            decision = self._router.route(text, local_model, cloud_model, local_only, allow_cloud)
         except ValueError as exc:
             emit(OrchestratorEvent.ERROR, {"message": str(exc)})
             return None
@@ -252,9 +257,7 @@ class Orchestrator:
 
         approved_for_call = False
         if decision.needs_confirmation:
-            request = ToolCallRequest(
-                tool=name, args=args, reason=decision.reason, call_id=call_id
-            )
+            request = ToolCallRequest(tool=name, args=args, reason=decision.reason, call_id=call_id)
             approved = self._ask_user(request, emit)
             if not approved:
                 emit(OrchestratorEvent.TOOL_RESULT, {"tool": name, "result": "zamítnuto"})

@@ -76,9 +76,9 @@ def resample(audio: np.ndarray, source_rate: int, target_rate: int) -> np.ndarra
         return np.array([], dtype=np.float32)
     source_positions = np.linspace(0.0, len(audio) - 1, num=len(audio))
     target_positions = np.linspace(0.0, len(audio) - 1, num=target_length)
-    return np.interp(
-        target_positions, source_positions, audio.astype(np.float32)
-    ).astype(np.float32)
+    return np.interp(target_positions, source_positions, audio.astype(np.float32)).astype(
+        np.float32
+    )
 
 
 class WhisperSTT:
@@ -248,6 +248,8 @@ class AudioRecorder:
         self._lock = threading.RLock()
         self._active = False
         self._buffer_lock = threading.Lock()
+        self.last_error = ""
+        self.input_rms = 0.0
 
     def _resolve_device(self) -> int | str | None:
         """Prevede nazev zarizeni na index, nebo vrati None."""
@@ -295,6 +297,7 @@ class AudioRecorder:
                 return False
 
             def callback(indata, frames, time_info, status):  # noqa: ARG001
+                self.input_rms = float(np.sqrt(np.mean(np.square(indata)))) if frames else 0.0
                 # Never wait for the lifecycle lock: stop() waits for this
                 # callback to return. Taking that lock here can deadlock.
                 if self._buffer_lock.acquire(blocking=False):
@@ -341,6 +344,7 @@ class AudioRecorder:
                 return True
 
             log.error("Zapnutí mikrofonu selhalo: %s", last_error)
+            self.last_error = str(last_error or "Neznámá chyba zvukového zařízení.")
             return False
 
     def _native_rate(self, device: int | str | None) -> int | None:
@@ -481,6 +485,7 @@ class SileroVAD:
                 speech = True
         self._remainder = buffer[usable:].copy()
         return speech
+
 
 class PushToTalk:
     """Push-to-talk rezim - nahravani bezi jen kdyz uzivatel drzi tlacitko.

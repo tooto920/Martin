@@ -32,19 +32,58 @@ class RoutingDecision:
 
 # Slova signalizující složitou úlohu.
 _COMPLEX_MARKERS = (
-    "analyz", "porovnej", "porovn", "navrhni", "architekt", "plán", "plan",
-    "vysvětli podrobně", "krok za krokem", "optimaliz", "lad", "debug",
-    "refaktor", "přepiš", "implementuj", "napiš kód", "co je chyba",
+    "analyz",
+    "porovnej",
+    "porovn",
+    "navrhni",
+    "architekt",
+    "plán",
+    "plan",
+    "vysvětli podrobně",
+    "krok za krokem",
+    "optimaliz",
+    "lad",
+    "debug",
+    "refaktor",
+    "přepiš",
+    "implementuj",
+    "napiš kód",
+    "co je chyba",
 )
 
 _VISION_MARKERS = (
-    "obrazov", "screen", "screenshot", "sním", "co je tady", "co je tohle",
-    "tahle chyba", "tuhle chyba", "okno", "co vidíš", "co tu je",
+    "obrazov",
+    "screen",
+    "screenshot",
+    "sním",
+    "co je tady",
+    "co je tohle",
+    "tahle chyba",
+    "tuhle chyba",
+    "okno",
+    "co vidíš",
+    "co tu je",
 )
 
 _TOOL_MARKERS = (
-    "spusť", "spust", "otevři", "otevri", "nastav", "zavři", "vyhledej",
-    "najdi", "spusť program", "launch", "přepni", "přepni na",
+    "zapamatuj",
+    "pamatuj",
+    "obrazov",
+    "screen",
+    "co vidíš",
+    "co je tohle",
+    "spusť",
+    "spust",
+    "otevři",
+    "otevri",
+    "nastav",
+    "zavři",
+    "vyhledej",
+    "najdi",
+    "spusť program",
+    "launch",
+    "přepni",
+    "přepni na",
 )
 
 _CODE_BLOCK = re.compile(r"```")
@@ -55,9 +94,9 @@ class ModelRouter:
 
     Pravidla:
       * Local Only režim -> vždy lokální model, jinak chyba.
-      * Obraz -> musí jít o model s vizí.
-      * Složitá úloha + povolený cloud -> cloud model.
-      * Jindy -> lokální model.
+      * Cloud -> vždy cloudový textový model, bez lokální klasifikace.
+      * Obraz -> samostatný potvrzený nástroj.
+      * Zakázaný cloud -> chyba; Offline musí být výslovně vybraný.
     """
 
     def __init__(self, client: OllamaClient) -> None:
@@ -97,10 +136,10 @@ class ModelRouter:
         needs_tools = self.requires_tools(text)
 
         if local_only:
+            if local_model.endswith(":cloud") or "-cloud" in local_model:
+                raise ValueError("Režim Offline vyžaduje lokální model bez cloudového označení.")
             if needs_vision and not self._client.has_vision(local_model):
-                raise ValueError(
-                    "Zadaný lokální model nemá podporu zpracování obrazu."
-                )
+                raise ValueError("Zadaný lokální model nemá podporu zpracování obrazu.")
             return RoutingDecision(
                 model=local_model,
                 provider="local",
@@ -111,42 +150,17 @@ class ModelRouter:
                 allow_cloud=False,
             )
 
-        if needs_vision:
-            if self._client.has_vision(local_model):
-                return RoutingDecision(
-                    model=local_model,
-                    provider="local",
-                    complexity=complexity,
-                    reason="Vizuální úloha - lokální model s podporou obrazu.",
-                    requires_vision=True,
-                    requires_tools=needs_tools,
+        if allow_cloud:
+            if not (cloud_model.endswith(":cloud") or "-cloud" in cloud_model):
+                raise ValueError(
+                    "Cloud vyžaduje cloudový model s označením :cloud nebo -cloud; lokální model nebyl spuštěn."
                 )
-            if allow_cloud:
-                return RoutingDecision(
-                    model=cloud_model,
-                    provider="cloud",
-                    complexity=complexity,
-                    reason="Lokální model neumí obraz - použit cloudový model.",
-                    requires_vision=True,
-                    requires_tools=needs_tools,
-                )
-            raise ValueError(
-                "Vizuální úloha vyžaduje model s podporou obrazu a cloud je vypnutý."
-            )
-
-        if complexity is TaskComplexity.COMPLEX and allow_cloud:
             return RoutingDecision(
                 model=cloud_model,
                 provider="cloud",
                 complexity=complexity,
-                reason="Složitá úloha - použit cloudový model.",
+                reason="Cloud-first: obraz pouze potvrzeným nástrojem.",
+                requires_vision=needs_vision,
                 requires_tools=needs_tools,
             )
-
-        return RoutingDecision(
-            model=local_model,
-            provider="local",
-            complexity=complexity,
-            reason="Úloha je zvládnutelná lokálně.",
-            requires_tools=needs_tools,
-        )
+        raise ValueError("Cloud je zakázán. Pro lokální model výslovně zvol režim Offline.")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -62,6 +62,9 @@ class MonitorPanel(QWidget):
         self.setMinimumWidth(300)
         self._build()
         self._connect()
+        self._level_timer = QTimer(self)
+        self._level_timer.setInterval(400)
+        self._level_timer.timeout.connect(self._update_input)
 
     def _build(self) -> None:
         layout = QVBoxLayout(self)
@@ -69,7 +72,7 @@ class MonitorPanel(QWidget):
         layout.setSpacing(12)
 
         # --- Hardware ---
-        hardware = QGroupBox("Hardware")
+        hardware = QGroupBox("Hardware — celý systém")
         hw_layout = QVBoxLayout(hardware)
         hw_layout.setSpacing(8)
 
@@ -134,6 +137,18 @@ class MonitorPanel(QWidget):
         self._stt_info.setObjectName("Subtitle")
         self._stt_info.setWordWrap(True)
         diag_layout.addWidget(self._stt_info)
+        self._input_info = QLabel("Vstup: neaktivní")
+        self._input_info.setWordWrap(True)
+        diag_layout.addWidget(self._input_info)
+        self._transcript = QLabel("Poslední přepis: —")
+        self._transcript.setWordWrap(True)
+        diag_layout.addWidget(self._transcript)
+        self._cloud_info = QLabel("Cloud: dosud bez požadavku")
+        self._cloud_info.setWordWrap(True)
+        diag_layout.addWidget(self._cloud_info)
+        self._last_error = QLabel("Poslední chyba: —")
+        self._last_error.setWordWrap(True)
+        diag_layout.addWidget(self._last_error)
         layout.addWidget(voice_diag)
 
         layout.addStretch(1)
@@ -146,26 +161,34 @@ class MonitorPanel(QWidget):
         self._ctx.tts_status.connect(self._on_tts)
         self._ctx.voice_diagnostics.connect(self._on_voice_diagnostics)
         self._ctx.voice_stage.connect(self._on_voice_stage)
+        self._ctx.request_diagnostics.connect(self._on_request)
+        self._ctx.error_occurred.connect(lambda s: self._last_error.setText("Poslední chyba: " + s))
+
+    def _update_input(self):
+        rec = self._ctx.voice_pipeline._recorder
+        self._input_info.setText(
+            f"Mikrofon: {self._ctx.settings.mic_device or 'výchozí'}\nÚroveň RMS: {getattr(rec, 'input_rms', 0):.4f}\nSTT: {self._ctx.settings.stt_model}"
+        )
+
+    def _on_request(self, data):
+        self._cloud_info.setText(
+            f"Model: {data['model']}\nID: {data['request_id']}\nTTFT: {data.get('ttft_s', 'nezjištěno')} s\nCelkem: {data['elapsed_s']:.2f} s\nStav: {data['status']}"
+        )
 
     def _on_snapshot(self, snapshot: Any) -> None:
         self._cpu.set_value(snapshot.cpu_percent)
         self._gpu.set_value(snapshot.gpu_utilization)
         self._ram.set_value(snapshot.ram_percent)
-        self._vram.set_value(
-            snapshot.vram_percent, f"{snapshot.gpu_memory_used_mb:.0f} MB"
-        )
+        self._vram.set_value(snapshot.vram_percent, f"{snapshot.gpu_memory_used_mb:.0f} MB")
         self._gpu_name.setText(snapshot.gpu_name or "GPU nedostupné")
-        temp = (
-            f"{snapshot.temperature_c:.0f} °C"
-            if snapshot.temperature_c is not None
-            else "—"
-        )
+        temp = f"{snapshot.temperature_c:.0f} °C" if snapshot.temperature_c is not None else "—"
         battery = (
-            f"{snapshot.battery_percent:.0f} %"
-            if snapshot.battery_percent is not None
-            else "—"
+            f"{snapshot.battery_percent:.0f} %" if snapshot.battery_percent is not None else "—"
         )
         self._detail.setText(
+            f"Martin + potomci: {snapshot.own_rss_mb:.0f} MB RAM\n"
+            f"Martin CPU: {snapshot.own_cpu_percent:.1f} % jednoho jádra\n"
+            f"MSFS: {'běží; herní režim' if snapshot.msfs_running and self._ctx.settings.gaming_auto else 'běží' if snapshot.msfs_running else 'nezjištěn'}\n"
             f"Teplota: {temp}   Baterie: {battery}\n"
             f"VRAM: {snapshot.vram_free_mb:.0f} MB volných z "
             f"{snapshot.gpu_memory_total_mb:.0f} MB"
@@ -176,15 +199,20 @@ class MonitorPanel(QWidget):
         self._profile_detail.setText(detail)
 
     def _on_listening(self, active: bool) -> None:
-        self._mic_state.setText(
-            "Mikrofon: poslouchám" if active else "Mikrofon: neaktivní"
-        )
+        if active:
+            self._level_timer.start()
+            self._update_input()
+        else:
+            self._level_timer.stop()
+        self._mic_state.setText("Mikrofon: poslouchám" if active else "Mikrofon: neaktivní")
 
     def _on_speaking(self, active: bool) -> None:
         if active:
             self._mic_state.setText("Hlas: mluvím")
         else:
-            self._mic_state.setText("Mikrofon: poslouchám" if self._ctx._listening else "Mikrofon: neaktivní")
+            self._mic_state.setText(
+                "Mikrofon: poslouchám" if self._ctx._listening else "Mikrofon: neaktivní"
+            )
 
     def _on_tts(self, info: str) -> None:
         self._voice.setText(info)
@@ -229,9 +257,22 @@ class MonitorPanel(QWidget):
         if name == "recording":
             self._stt_info.setText("STT: nahrávám")
         elif name == "transcribing":
-            self._stt_info.setText("STT: rozpoznáno" if getattr(event, "text", "") else "STT: rozpoznávám")
+            if getattr(event, "text", ""):
+                self._transcript.setText("Poslední přepis: " + event.text)
+            self._stt_info.setText(
+                "STT: rozpoznáno" if getattr(event, "text", "") else "STT: rozpoznávám"
+            )
         elif name == "cancelled":
             self._stt_info.setText("STT: zrušeno")
+        elif name == "error":
+            self._last_error.setText(
+                "Poslední chyba: "
+                + (
+                    getattr(event, "error", "")
+                    or getattr(event, "message", "")
+                    or "Neznámá chyba hlasu"
+                )
+            )
 
     def refresh_theme(self) -> None:
         self._theme = get_theme(self._ctx.settings.theme)

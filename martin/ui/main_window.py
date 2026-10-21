@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QSplitter,
+    QScrollArea,
     QStackedWidget,
     QSystemTrayIcon,
     QTabBar,
@@ -47,7 +48,7 @@ class MainWindow(QMainWindow):
         self._floating: FloatingWindow | None = None
         self._quitting = False
 
-        self.setWindowTitle("Martin 2.0")
+        self.setWindowTitle("Martin 2.1 Cloud Edition")
         self.setMinimumSize(1040, 660)
         self.resize(1320, 840)
         self.setWindowIcon(app_context.app_icon())
@@ -95,7 +96,11 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self._pages)
 
         self._panel = MonitorPanel(self._ctx)
-        splitter.addWidget(self._panel)
+        panel_scroll = QScrollArea()
+        panel_scroll.setWidgetResizable(True)
+        panel_scroll.setWidget(self._panel)
+        panel_scroll.setMinimumWidth(325)
+        splitter.addWidget(panel_scroll)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([900, 400])
@@ -183,7 +188,7 @@ class MainWindow(QMainWindow):
         self._tray_show.triggered.connect(self._show_window)
         self._tray_floating.triggered.connect(self._toggle_floating)
         self._tray_listen.triggered.connect(self._ctx.toggle_listening)
-        self._tray_stop.triggered.connect(self._ctx.stop_speaking)
+        self._tray_stop.triggered.connect(self._ctx.stop_generation)
         self._tray_quit.triggered.connect(self._quit_app)
         self._tray.show()
 
@@ -194,16 +199,14 @@ class MainWindow(QMainWindow):
             self,
             activated=self._ctx.toggle_listening,
         )
-        QShortcut(
-            QKeySequence("Ctrl+Shift+L"), self, activated=self._chat.focus_input
-        )
+        QShortcut(QKeySequence("Ctrl+Shift+L"), self, activated=self._chat.focus_input)
         QShortcut(QKeySequence("Ctrl+Shift+T"), self, activated=self._ctx.toggle_theme)
-        QShortcut(QKeySequence("Ctrl+Shift+C"), self, activated=self._ctx.stop_speaking)
+        QShortcut(QKeySequence("Ctrl+Shift+C"), self, activated=self._ctx.stop_generation)
         QShortcut(QKeySequence("Ctrl+Q"), self, activated=self._quit_app)
 
     def _connect_signals(self) -> None:
         self._chat.message_submitted.connect(self._ctx.send_message)
-        self._chat.stop_requested.connect(self._ctx.stop_speaking)
+        self._chat.stop_requested.connect(self._ctx.stop_generation)
         self._chat.screenshot_requested.connect(self._on_screenshot_requested)
         self._chat.mic_toggled.connect(self._ctx.toggle_listening)
         self._ctx.user_message.connect(lambda text: self._chat.add_message("user", text))
@@ -223,7 +226,7 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def _on_screenshot_requested(self) -> None:
-        self._ctx.send_message("Co je na obrazovce? Popiš to, co vidíš.")
+        self._ctx.request_screen_analysis()
 
     def _toggle_floating(self) -> None:
         if self._floating is None:
@@ -249,6 +252,17 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QMessageBox
 
         detail = ", ".join(f"{k}={v}" for k, v in args.items())
+        if tool == "analyze_screen":
+            s = self._ctx.settings
+            destination = (
+                "místní model " + s.local_model
+                if s.ai_mode == "Offline"
+                else "Ollama Cloud / " + s.vision_model
+            )
+            detail = (
+                f"Snímek okna: {s.screenshot_window or '(okno není vybráno)'}\nOdeslat do: {destination}\nPovoluješ pouze tento jeden snímek.\n"
+                + detail
+            )
         box = QMessageBox(self)
         box.setWindowTitle("Potvrzení akce")
         box.setText("Martin chce provést následující akci:")
@@ -256,7 +270,13 @@ class MainWindow(QMainWindow):
         box.setIcon(QMessageBox.Icon.Question)
         approve = box.addButton("Povolit", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("Zamítnout", QMessageBox.ButtonRole.RejectRole)
+
+        def close_when_done(_info):
+            box.reject()
+
+        self._ctx.stream_finished.connect(close_when_done)
         box.exec()
+        self._ctx.stream_finished.disconnect(close_when_done)
         self._ctx.respond_confirm(box.clickedButton() is approve)
 
     def _update_model_label(self, label: str) -> None:
@@ -287,11 +307,13 @@ class MainWindow(QMainWindow):
         self._ctx.status_message.emit("Ukončuji hlas a připojení...")
         self._ctx.shutdown_finished.connect(self._finish_quit)
         import threading
+
         def cleanup():
             try:
                 self._ctx.shutdown()
             finally:
                 self._ctx.shutdown_finished.emit()
+
         threading.Thread(target=cleanup, name="martin-shutdown", daemon=True).start()
 
     def _finish_quit(self) -> None:

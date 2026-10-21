@@ -24,12 +24,30 @@ class Settings:
     ollama_url: str = DEFAULT_OLLAMA_URL
     local_model: str = DEFAULT_LOCAL_MODEL
     cloud_model: str = DEFAULT_CLOUD_MODEL
+    schema_version: int = 2
+    ai_mode: str = "Cloud"  # Cloud | Automatic | Offline
+    vision_model: str = "gemma4:cloud"
+    cloud_memory_enabled: bool = False
+    cloud_images_enabled: bool = False
+    screenshot_window: str = ""
+    gaming_auto: bool = True
+    daily_budget_usd: float = 0.0
+    monthly_budget_usd: float = 0.0
+    daily_request_limit: int = 0
+    daily_token_limit: int = 0
+    rates_date: str = "2026-10-21"
+    model_rates: dict[str, list[float]] = field(
+        default_factory=lambda: {
+            "nemotron-3-nano:30b-cloud": [0.06, 0.24, 0.06],
+            "gemma4:cloud": [0.14, 0.40, 0.05],
+        }
+    )
     local_only: bool = False
     allow_cloud_fallback: bool = True
     auto_route: bool = True
     temperature: float = 0.6
     num_ctx: int = 8192
-    max_tokens: int = 2048
+    max_tokens: int = 512
     request_timeout: float = 120.0
     # Režim "přemýšlení" modelu. Vypnutý = rychlé odpovědi.
     thinking: bool = False
@@ -75,10 +93,23 @@ class Settings:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Settings":
+        if not isinstance(data, dict):
+            raise ValueError("Nastavení musí být objekt JSON.")
         known = {f.name for f in fields(cls)}
         kwargs = {k: v for k, v in (data or {}).items() if k in known}
         extra = {k: v for k, v in (data or {}).items() if k not in known}
         obj = cls(**kwargs)
+        if "ai_mode" not in data:
+            obj.ai_mode = (
+                "Offline"
+                if data.get("local_only")
+                or data.get("auto_route") is False
+                or data.get("allow_cloud_fallback") is False
+                else "Cloud"
+            )
+        if obj.ai_mode not in ("Cloud", "Automatic", "Offline"):
+            obj.ai_mode = "Cloud"
+        obj.schema_version = 2
         if extra:
             obj.extra.update(extra)
         return obj
@@ -108,6 +139,10 @@ class SettingsStore:
             if self._path.is_file():
                 try:
                     raw = json.loads(self._path.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict) and raw.get("schema_version", 0) < 2:
+                        backup = self._path.with_suffix(".pre-2.1.json")
+                        if not backup.exists():
+                            backup.write_bytes(self._path.read_bytes())
                     self._settings = Settings.from_dict(raw)
                 except (OSError, json.JSONDecodeError, TypeError, ValueError):
                     self._settings = Settings()

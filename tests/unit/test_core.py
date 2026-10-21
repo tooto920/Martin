@@ -28,24 +28,24 @@ class FakeClient:
 
 
 class TestRouter:
-    def test_simple_request_stays_local(self):
+    def test_simple_request_uses_cloud(self):
         router = ModelRouter(FakeClient())
-        decision = router.route("ahoj, jak se máš?", "local", "cloud")
-        assert decision.provider == "local"
-        assert decision.model == "local"
+        decision = router.route("ahoj, jak se máš?", "local", "some:cloud")
+        assert decision.provider == "cloud"
+        assert decision.model == "some:cloud"
 
     def test_vision_request_uses_vision_model(self):
         router = ModelRouter(FakeClient())
-        decision = router.route("Co je na obrazovce?", "local", "cloud")
+        decision = router.route("Co je na obrazovce?", "local", "some:cloud")
         assert decision.requires_vision is True
-        assert decision.provider == "local"
+        assert decision.provider == "cloud"
 
     def test_complex_request_goes_to_cloud(self):
         router = ModelRouter(FakeClient())
         decision = router.route(
             "analyzuj a porovnej detailne a navrhni optimalizaci architektury",
             "local",
-            "cloud",
+            "some:cloud",
         )
         assert decision.provider == "cloud"
 
@@ -72,10 +72,7 @@ class TestRouter:
     def test_complexity_estimation(self):
         router = ModelRouter(FakeClient())
         assert router.estimate_complexity("ahoj") is TaskComplexity.TRIVIAL
-        assert (
-            router.estimate_complexity("analyzuj a porovnej a navrhni") is
-            TaskComplexity.COMPLEX
-        )
+        assert router.estimate_complexity("analyzuj a porovnej a navrhni") is TaskComplexity.COMPLEX
 
     def test_tool_request_detected(self):
         router = ModelRouter(FakeClient())

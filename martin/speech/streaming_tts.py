@@ -81,7 +81,7 @@ class StreamingTTS:
         streamer.wait()
     """
 
-    def __init__(self, tts: Any, max_queue: int = MAX_QUEUE) -> None:
+    def __init__(self, tts: Any, max_queue: int = MAX_QUEUE, max_chars: int = 0) -> None:
         self._tts = tts
         self._max_queue = max_queue
         self._lock = threading.RLock()
@@ -99,6 +99,9 @@ class StreamingTTS:
         self._on_playback_start: Any = None
         self._condition = threading.Condition(self._lock)
         self._input_done = False
+        self._max_chars = max_chars
+        self._accepted_chars = 0
+        self.synth_s = 0.0
 
     # -- stav -----------------------------------------------------------
     @property
@@ -129,6 +132,11 @@ class StreamingTTS:
         """
         if not text or self._stop.is_set() or self._input_done:
             return
+        if self._max_chars:
+            text = text[: max(0, self._max_chars - self._accepted_chars)]
+            self._accepted_chars += len(text)
+            if not text:
+                return
         # to_speech_text text orezava - koncova mezera mezi chunky by
         # se ztratila a slova by se slepila ("spustimMicrosoft").
         with self._lock:
@@ -136,7 +144,9 @@ class StreamingTTS:
                 self._start_time = time.perf_counter()
             self._buffer += text
             if self._thread is None:
-                self._thread = threading.Thread(target=self._run, name="martin-stream-tts", daemon=True)
+                self._thread = threading.Thread(
+                    target=self._run, name="martin-stream-tts", daemon=True
+                )
                 self._thread.start()
         self._extract_sentences(final=False)
 
@@ -208,6 +218,7 @@ class StreamingTTS:
             if not sentence:
                 return None
             result = self._tts.synthesize(sentence)
+            self.synth_s += getattr(result, "synth_s", 0.0)
         except Exception as exc:  # noqa: BLE001
             log.warning("Syntéza věty selhala: %s", exc)
             self._error = str(exc)

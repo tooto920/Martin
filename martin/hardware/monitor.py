@@ -30,6 +30,9 @@ class SystemSnapshot:
     gpu_name: str
     temperature_c: float | None
     battery_percent: float | None
+    own_rss_mb: float = 0.0
+    own_cpu_percent: float = 0.0
+    msfs_running: bool = False
 
     @property
     def vram_free_mb(self) -> float:
@@ -56,6 +59,9 @@ class SystemSnapshot:
             "gpu_name": self.gpu_name,
             "temperature_c": self.temperature_c,
             "battery_percent": self.battery_percent,
+            "martin_rss_mb": round(self.own_rss_mb, 1),
+            "martin_cpu_one_core_percent": self.own_cpu_percent,
+            "msfs_running": self.msfs_running,
         }
 
 
@@ -69,6 +75,8 @@ class HardwareMonitor:
         self._callbacks: list[Callable[[SystemSnapshot], None]] = []
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self.game_running = False
+        self._process = psutil.Process()
 
     def add_callback(self, callback: Callable[[SystemSnapshot], None]) -> None:
         with self._lock:
@@ -81,6 +89,12 @@ class HardwareMonitor:
     def snapshot(self) -> SystemSnapshot:
         """Okamžitý snapshot systémových zdrojů."""
         stats = collect_stats()
+        rss = self._process.memory_info().rss
+        for child in self._process.children(recursive=True):
+            try:
+                rss += child.memory_info().rss
+            except psutil.Error:
+                pass
         return SystemSnapshot(
             timestamp=time.time(),
             cpu_percent=stats.cpu_percent,
@@ -93,6 +107,9 @@ class HardwareMonitor:
             gpu_name=stats.gpu_name,
             temperature_c=stats.temperature_c,
             battery_percent=stats.battery_percent,
+            own_rss_mb=rss / 1048576,
+            own_cpu_percent=self._process.cpu_percent(),
+            msfs_running=self.game_running,
         )
 
     def start(self) -> None:
@@ -100,9 +117,7 @@ class HardwareMonitor:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(
-            target=self._run, name="martin-hw-monitor", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="martin-hw-monitor", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
@@ -116,6 +131,11 @@ class HardwareMonitor:
         psutil.cpu_percent(interval=None)
         while not self._stop.is_set():
             try:
+                self.game_running = any(
+                    p.info.get("name", "").lower()
+                    in ("flightsimulator2024.exe", "flightsimulator.exe", "flight sim.exe")
+                    for p in psutil.process_iter(["name"])
+                )
                 snapshot = self.snapshot()
             except Exception:  # noqa: BLE001 - monitoring nesmí shodit běh
                 self._stop.wait(self._interval)

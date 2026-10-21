@@ -1,4 +1,4 @@
-"""Vytvoří ZIP distribuci Martina 2.0.
+"""Vytvoří ZIP distribuci Martina 2.1 Cloud Edition.
 
 ZIP obsahuje:
   Martin/Martin.exe      - spustitelná aplikace
@@ -20,55 +20,29 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-READ_ME = """\
-Martin 2.0 - osobni AI asistent pro Windows 11
-================================================
-
-SPUSTENI
---------
-Dvojklik na Martin.exe
-
-POZADAVKY
----------
-- Ollama musi bezet na http://127.0.0.1:11434
-  (nainstalace: https://ollama.com)
-- Model qwen3.5:4b doporucujeme nainstalovat:
-  ollama pull qwen3.5:4b
-
-DATA A NASTAVENI
-----------------
-- %LOCALAPPDATA%\\Martin\\logs\\martin.log   - log aplikace
-- %LOCALAPPDATA%\\Martin\\martin.db          - dlouhodoba pamet
-- %LOCALAPPDATA%\\Martin\\konverzace.db     - historie konverzaci
-- %LOCALAPPDATA%\\Martin\\settings.json      - nastaveni
-
-BEZPECNOST
-----------
-Martin nema pristup k shellu. Akce deleni tri urovne:
-- SAFE       - jen cteni a spusteni schvalenych aplikaci
-- CONFIRM    - zmenu udaju, vyzaduje vase potvrzeni
-- BLOCK      - destruktivni akce jsou vzdy zablokovane
-"""
-
-
 def build_zip(build_dir: Path, out_zip: Path) -> Path:
     """Zabalí build do ZIP archivu."""
     app_dir = build_dir / "Martin"
     if not (app_dir / "Martin.exe").is_file():
         raise SystemExit(f"Nelze najít Martin.exe v {app_dir}. Nejdřív sestav build.")
-    for name in ("whisper/ggml-small.bin", "vad/ggml-silero-vad.bin",
-                 "piper/cs_CZ-jirka-medium.onnx", "piper/cs_CZ-jirka-medium.onnx.json"):
+    for name in (
+        "whisper/ggml-small.bin",
+        "vad/ggml-silero-vad.bin",
+        "piper/cs_CZ-jirka-medium.onnx",
+        "piper/cs_CZ-jirka-medium.onnx.json",
+    ):
         if not (app_dir / "models" / name).is_file():
-            raise SystemExit(f"Neúplný build: chybí models/{name}. Použij packaging/build_windows.py.")
+            raise SystemExit(
+                f"Neúplný build: chybí models/{name}. Použij packaging/build_windows.py."
+            )
 
     stage = Path(tempfile.mkdtemp(prefix="martin-stage-", dir=build_dir)) / "Martin"
     shutil.copytree(app_dir, stage)
 
-    (stage.parent / "README.txt").write_text(READ_ME, encoding="utf-8")
+    readme = Path(__file__).resolve().parent.parent / "docs" / "README_CLOUD_CZ.md"
+    (stage.parent / "README.txt").write_text(readme.read_text(encoding="utf-8"), encoding="utf-8")
     (stage.parent / "Spustit_Martin.bat").write_text(
-        "@echo off\r\n"
-        "cd /d \"%~dp0Martin\"\r\n"
-        "start \"\" Martin.exe\r\n",
+        '@echo off\r\ncd /d "%~dp0Martin"\r\nstart "" Martin.exe\r\n',
         encoding="utf-8",
     )
 
@@ -85,7 +59,7 @@ def build_zip(build_dir: Path, out_zip: Path) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Zabal Martin 2.0 do ZIP archivu.")
+    parser = argparse.ArgumentParser(description="Zabal Martin 2.1 Cloud do ZIP archivu.")
     parser.add_argument(
         "--build-dir",
         type=Path,
@@ -96,7 +70,7 @@ def main() -> int:
         type=Path,
         default=Path(__file__).resolve().parent.parent
         / "build_output"
-        / "Martin-2.0-win64.zip",
+        / "Martin-2.1-Cloud-win64.zip",
     )
     args = parser.parse_args()
     path = build_zip(args.build_dir, args.out)

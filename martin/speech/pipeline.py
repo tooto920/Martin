@@ -181,6 +181,7 @@ class VoicePipeline:
             self._stt.reset_cancel()
 
         start = time.perf_counter()
+        self._cycle_start = start
 
         def run() -> None:
             recorder = None
@@ -191,7 +192,8 @@ class VoicePipeline:
                         self._recording = False
                     self._emit(
                         Stage.ERROR,
-                        error="Mikrofon se nepodařilo otevřít.",
+                        error="Mikrofon se nepodařilo otevřít. "
+                        + getattr(recorder, "last_error", "Zkontroluj připojení a výběr zařízení."),
                     )
                     return
                 with self._lock:
@@ -309,9 +311,12 @@ class VoicePipeline:
         text, diagnostics = self.transcribe(audio)
         if not text:
             reason = diagnostics.get("diagnostics", {}).get("rejected_reason", "")
+            actual_error = diagnostics.get("error") or diagnostics.get("diagnostics", {}).get(
+                "error"
+            )
             self._emit(
                 Stage.ERROR,
-                message="Nic jsem neslyšel.",
+                message=str(actual_error) if actual_error else "Nic jsem neslyšel.",
                 diagnostics=diagnostics,
                 error=reason,
             )

@@ -63,9 +63,7 @@ def orchestrator_parts(registry, audit_log):
     )
     policy = PolicyEngine(tools, audit_log)
     client = FakeClient()
-    orch = Orchestrator(
-            client, policy, ModelRouter(client), "Jsi Martin.", confirm_timeout=1.0
-        )
+    orch = Orchestrator(client, policy, ModelRouter(client), "Jsi Martin.", confirm_timeout=1.0)
     return orch, tools, client
 
 
@@ -90,7 +88,7 @@ class TestConfirmFlow:
         orch.run(
             [ChatMessage(role="user", content="udělej to")],
             local_model="fake",
-            cloud_model="fake",
+            cloud_model="fake:cloud",
             tools=tools.schemas(),
             emit=emit,
             think=False,
@@ -101,9 +99,7 @@ class TestConfirmFlow:
 
     def test_denied_confirmation_stops_action(self, orchestrator_parts, audit_log):
         orch, tools, client = orchestrator_parts
-        client._tool_calls = [
-            {"id": "c1", "function": {"name": "risky", "arguments": {}}}
-        ]
+        client._tool_calls = [{"id": "c1", "function": {"name": "risky", "arguments": {}}}]
 
         def emit(event, data):
             if event is OrchestratorEvent.CONFIRM_REQUEST:
@@ -112,7 +108,7 @@ class TestConfirmFlow:
         orch.run(
             [ChatMessage(role="user", content="udělej to")],
             local_model="fake",
-            cloud_model="fake",
+            cloud_model="fake:cloud",
             tools=tools.schemas(),
             emit=emit,
             think=False,
@@ -125,9 +121,7 @@ class TestConfirmFlow:
     def test_immediate_confirmation_is_not_lost(self, orchestrator_parts):
         """Odpoved uzivatele hned po udalosti nesmi zniknout."""
         orch, tools, client = orchestrator_parts
-        client._tool_calls = [
-            {"id": "c1", "function": {"name": "risky", "arguments": {}}}
-        ]
+        client._tool_calls = [{"id": "c1", "function": {"name": "risky", "arguments": {}}}]
 
         done = []
 
@@ -142,7 +136,7 @@ class TestConfirmFlow:
         orch.run(
             [ChatMessage(role="user", content="udělej to")],
             local_model="fake",
-            cloud_model="fake",
+            cloud_model="fake:cloud",
             tools=tools.schemas(),
             emit=emit,
             think=False,
@@ -154,16 +148,14 @@ class TestConfirmFlow:
 
     def test_confirm_after_timeout_returns_false(self, orchestrator_parts):
         orch, tools, client = orchestrator_parts
-        client._tool_calls = [
-            {"id": "c1", "function": {"name": "risky", "arguments": {}}}
-        ]
+        client._tool_calls = [{"id": "c1", "function": {"name": "risky", "arguments": {}}}]
         # Zadna odpoved - cekame, ale timeout v testu zkracujeme.
         orch._confirm_event.set()
         outcomes = []
         orch.run(
             [ChatMessage(role="user", content="udělej to")],
             local_model="fake",
-            cloud_model="fake",
+            cloud_model="fake:cloud",
             tools=tools.schemas(),
             emit=lambda e, d: outcomes.append(e),
             think=False,
@@ -182,18 +174,14 @@ class TestBlockedTool:
         )
         policy = PolicyEngine(tools, audit_log)
         client = FakeClient()
-        client._tool_calls = [
-            {"id": "c1", "function": {"name": "destroy", "arguments": {}}}
-        ]
-        orch = Orchestrator(
-            client, policy, ModelRouter(client), "Jsi Martin.", confirm_timeout=1.0
-        )
+        client._tool_calls = [{"id": "c1", "function": {"name": "destroy", "arguments": {}}}]
+        orch = Orchestrator(client, policy, ModelRouter(client), "Jsi Martin.", confirm_timeout=1.0)
 
         events = []
         orch.run(
             [ChatMessage(role="user", content="znic to")],
             local_model="fake",
-            cloud_model="fake",
+            cloud_model="fake:cloud",
             tools=tools.schemas(),
             emit=lambda e, d: events.append(e),
             think=False,

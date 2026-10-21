@@ -1,4 +1,5 @@
 """Fixed, authenticated local STT protocol; native decoder stays outside Qt."""
+
 from __future__ import annotations
 
 import base64
@@ -16,7 +17,9 @@ import numpy as np
 
 from martin.core.logging import get_logger, setup_logging
 from martin.speech.whispercpp_backend import (
-    WhisperCppBackend, SttDiagnostics, TranscriptionOutcome,
+    WhisperCppBackend,
+    SttDiagnostics,
+    TranscriptionOutcome,
 )
 
 log = get_logger(__name__)
@@ -32,6 +35,7 @@ def send(sock, value):
 
 def receive(sock, cancelled=None, timeout=60):
     deadline = time.monotonic() + timeout
+
     def read(count):
         data = bytearray()
         while len(data) < count:
@@ -44,9 +48,12 @@ def receive(sock, cancelled=None, timeout=60):
             except socket.timeout:
                 continue
             if not part:
-                raise RuntimeError("Proces rozpoznávání řeči se neočekávaně ukončil. Podrobnosti jsou v diagnostickém logu.")
+                raise RuntimeError(
+                    "Proces rozpoznávání řeči se neočekávaně ukončil. Podrobnosti jsou v diagnostickém logu."
+                )
             data.extend(part)
         return bytes(data)
+
     size = struct.unpack("!I", read(4))[0]
     if size > MAX_MESSAGE:
         raise RuntimeError("Neplatná délka zprávy STT.")
@@ -55,6 +62,7 @@ def receive(sock, cancelled=None, timeout=60):
 
 class IsolatedWhisperBackend(WhisperCppBackend):
     """Persistent decoder process with cancellation and bounded lifetime."""
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._process = None
@@ -72,6 +80,15 @@ class IsolatedWhisperBackend(WhisperCppBackend):
             except OSError:
                 pass
         if process:
+            # Windows venv python.exe may be a launcher with an interpreter
+            # child. Track only this worker's descendants before terminating
+            # it; otherwise native inference can survive its launcher.
+            import psutil
+
+            try:
+                descendants = psutil.Process(process.pid).children(recursive=True)
+            except psutil.Error:
+                descendants = []
             if process.poll() is None:
                 process.terminate()
             try:
@@ -79,6 +96,18 @@ class IsolatedWhisperBackend(WhisperCppBackend):
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=3)
+            for child in reversed(descendants):
+                try:
+                    child.terminate()
+                except psutil.Error:
+                    pass
+            _, alive = psutil.wait_procs(descendants, timeout=3)
+            for child in alive:
+                try:
+                    child.kill()
+                except psutil.Error:
+                    pass
+            psutil.wait_procs(alive, timeout=3)
 
     def cancel(self):
         self._cancel.set()
@@ -107,7 +136,9 @@ class IsolatedWhisperBackend(WhisperCppBackend):
         if self._cancel.is_set():
             raise RuntimeError("Rozpoznání zrušeno.")
         if self.model_file() is None or self.vad_file() is None:
-            raise RuntimeError("Chybí model Whisper nebo VAD. Zkontroluj složku models vedle Martin.exe.")
+            raise RuntimeError(
+                "Chybí model Whisper nebo VAD. Zkontroluj složku models vedle Martin.exe."
+            )
         token = secrets.token_hex(32)
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
@@ -118,19 +149,29 @@ class IsolatedWhisperBackend(WhisperCppBackend):
                 args += ["-m", "martin.speech.worker"]
             args += ["--stt-worker", str(listener.getsockname()[1]), token]
             process = subprocess.Popen(
-                args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                args,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                cwd=None if getattr(sys, "frozen", False) else str(Path(__file__).resolve().parents[2]),
+                cwd=None
+                if getattr(sys, "frozen", False)
+                else str(Path(__file__).resolve().parents[2]),
             )
             with self._lock:
                 self._process = process
             deadline = time.monotonic() + 15
             while True:
-                if self._cancel.is_set() or process.poll() is not None or time.monotonic() > deadline:
+                if (
+                    self._cancel.is_set()
+                    or process.poll() is not None
+                    or time.monotonic() > deadline
+                ):
                     code = process.poll()
                     self._close_worker()
-                    raise RuntimeError(f"STT proces se nepodařilo spustit (exit={code}). Viz diagnostické logy.")
+                    raise RuntimeError(
+                        f"STT proces se nepodařilo spustit (exit={code}). Viz diagnostické logy."
+                    )
                 try:
                     sock, _ = listener.accept()
                     sock.settimeout(0.25)
@@ -142,10 +183,18 @@ class IsolatedWhisperBackend(WhisperCppBackend):
                     continue
         with self._lock:
             self._socket = sock
-        send(sock, {"op": "init", "model_size": self._model_size,
-                    "models_dir": str(self._models_dir), "n_threads": self._n_threads,
-                    "language": self._language, "vad_model_path": str(self._vad_model_path),
-                    "silence_rms": self._silence_rms})
+        send(
+            sock,
+            {
+                "op": "init",
+                "model_size": self._model_size,
+                "models_dir": str(self._models_dir),
+                "n_threads": self._n_threads,
+                "language": self._language,
+                "vad_model_path": str(self._vad_model_path),
+                "silence_rms": self._silence_rms,
+            },
+        )
         result = receive(sock, self._cancel, timeout=45)
         if not result.get("ok"):
             raise RuntimeError(result.get("error", "Načtení STT selhalo."))
@@ -170,11 +219,22 @@ class IsolatedWhisperBackend(WhisperCppBackend):
                 data = np.ascontiguousarray(audio, dtype="<f4")
                 if data.size > 16000 * 60 or not np.all(np.isfinite(data)):
                     raise RuntimeError("Neplatný nebo příliš dlouhý zvukový záznam.")
-                send(sock, {"op": "transcribe", "audio": base64.b64encode(data.tobytes()).decode("ascii"),
-                            "sample_rate": sample_rate, "silence_rms": self._silence_rms})
+                send(
+                    sock,
+                    {
+                        "op": "transcribe",
+                        "audio": base64.b64encode(data.tobytes()).decode("ascii"),
+                        "sample_rate": sample_rate,
+                        "silence_rms": self._silence_rms,
+                    },
+                )
                 result = receive(sock, self._cancel, timeout=60)
-                return TranscriptionOutcome(result["text"], result["ok"], result["error"],
-                                            SttDiagnostics(**result["diagnostics"]))
+                return TranscriptionOutcome(
+                    result["text"],
+                    result["ok"],
+                    result["error"],
+                    SttDiagnostics(**result["diagnostics"]),
+                )
             except Exception as exc:
                 log.exception("Izolované STT selhalo")
                 self._close_worker()
@@ -192,8 +252,14 @@ def worker_main(port, token):
         backend = WhisperCppBackend(**config)
         start = time.perf_counter()
         ok = backend.warm_up()
-        send(sock, {"ok": ok, "error": "Nepodařilo se načíst Whisper; viz log.",
-                    "load_s": time.perf_counter() - start})
+        send(
+            sock,
+            {
+                "ok": ok,
+                "error": "Nepodařilo se načíst Whisper; viz log.",
+                "load_s": time.perf_counter() - start,
+            },
+        )
         if not ok:
             return 1
         while True:
@@ -203,7 +269,9 @@ def worker_main(port, token):
                 return 0
             if request.get("op") != "transcribe":
                 return 2
-            audio = np.frombuffer(base64.b64decode(request["audio"], validate=True), dtype="<f4").copy()
+            audio = np.frombuffer(
+                base64.b64decode(request["audio"], validate=True), dtype="<f4"
+            ).copy()
             if audio.size > 16000 * 60:
                 return 2
             backend.set_silence_threshold(request["silence_rms"])

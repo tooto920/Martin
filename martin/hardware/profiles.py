@@ -65,8 +65,8 @@ PROFILE_DEFS: dict[str, PowerProfile] = {
     PROFILE_GAMING: PowerProfile(
         name=PROFILE_GAMING,
         description=(
-            "Uvolní VRAM pro hry. Model se odpojí od GPU a běží na CPU, "
-            "nebo se použije povolený cloudový model."
+            "Cloud šetří VRAM pro hry. Offline model používá CPU a keep_alive=0. "
+            "Cizí modely se automaticky neodpojují."
         ),
         keep_alive="0",
         prefer_cloud=True,
@@ -76,8 +76,8 @@ PROFILE_DEFS: dict[str, PowerProfile] = {
     PROFILE_SMART: PowerProfile(
         name=PROFILE_SMART,
         description=(
-            "Automaticky volí lokální nebo cloudový model podle vytížení "
-            "a složitosti úlohy."
+            "Cloud-first. Při běhu MSFS se monitoring zpomalí; "
+            "lokální model vyžaduje výslovný režim Offline."
         ),
         keep_alive="10m",
         prefer_cloud=False,
@@ -102,6 +102,35 @@ class HardwareManager:
         self._lock = threading.RLock()
         self._profile = PROFILE_SMART
         self._last_release_check: dict[str, Any] = {}
+        self._owned_models = set()
+        self._local_before = {}
+
+    def observe_local(self, model):
+        try:
+            response = httpx.get(f"{self._ollama_url}/api/ps", timeout=5)
+            response.raise_for_status()
+            self._local_before[model] = not any(
+                model in (m.get("name"), m.get("model")) for m in response.json().get("models", [])
+            )
+        except Exception:
+            self._local_before[model] = False
+
+    def finish_local(self, model):
+        if self._local_before.pop(model, False):
+            self._owned_models.add(model)
+
+    def unload_owned(self):
+        results = {}
+        for model in list(self._owned_models):
+            ok, detail = self._unload_model(self._ollama_url, model)
+            results[model] = {"ok": ok, "detail": detail}
+            if ok:
+                self._owned_models.discard(model)
+        return {
+            "ok": all(r["ok"] for r in results.values()),
+            "models": results,
+            "note": "Odpojují se pouze lokální modely, které Martin pozoroval jako nenačtené před vlastním požadavkem. Již běžící modely se nemění.",
+        }
 
     @property
     def profile(self) -> str:
@@ -136,7 +165,7 @@ class HardwareManager:
         detail = ""
         released = False
 
-        if definition.keep_alive == "0" and local_model:
+        if definition.keep_alive == "0" and local_model in self._owned_models:
             released, detail = self._unload_model(url, local_model)
         elif local_model:
             detail = "Další požadavky použijí nastavení tohoto profilu."
@@ -144,15 +173,15 @@ class HardwareManager:
         with self._lock:
             self._profile = name
 
-        snapshot = self._monitor.snapshot()
+        snapshot = self._monitor.latest()
         return {
             "ok": True,
             "profile": name,
             "label": definition.label_cz,
             "detail": detail,
             "model_unloaded": released,
-            "vram_free_mb": round(snapshot.vram_free_mb),
-            "vram_total_mb": round(snapshot.gpu_memory_total_mb),
+            "vram_free_mb": round(snapshot.vram_free_mb) if snapshot else None,
+            "vram_total_mb": round(snapshot.gpu_memory_total_mb) if snapshot else None,
             "verified": released,
         }
 
@@ -179,12 +208,18 @@ class HardwareManager:
                 status.raise_for_status()
                 loaded = status.json().get("models", [])
                 if any(model in (item.get("name"), item.get("model")) for item in loaded):
-                    return False, "Požadavek na odpojení odeslán, ale model je podle /api/ps stále načtený."
+                    return (
+                        False,
+                        "Požadavek na odpojení odeslán, ale model je podle /api/ps stále načtený.",
+                    )
         except httpx.HTTPError as exc:
             return False, f"Nepodařilo se uvolnit model z VRAM: {exc}"
         except (ValueError, TypeError, AttributeError) as exc:
             return False, f"Stav modelu se nepodařilo ověřit: {exc}"
-        return True, "Ollama /api/ps potvrzuje, že model již není načtený. Fyzické využití VRAM se měří samostatně."
+        return (
+            True,
+            "Ollama /api/ps potvrzuje, že model již není načtený. Fyzické využití VRAM se měří samostatně.",
+        )
 
     def should_use_cloud(self, snapshot: SystemSnapshot | None = None) -> bool:
         """Rozhodne, zda je vhodný čas na cloud (kvůli vytížení)."""
