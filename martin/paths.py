@@ -52,6 +52,8 @@ LOG_DIR = DATA_DIR / "logs"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 SECURITY_LOG_PATH = DATA_DIR / "logs" / "security.jsonl"
 PIPER_VOICES_DIR = MODELS_DIR / "piper"
+VAD_MODEL_DIR = MODELS_DIR / "vad"
+VAD_MODEL_PATH = VAD_MODEL_DIR / "silero_vad.onnx"
 WHISPER_CACHE_DIR = MODELS_DIR / "whisper"
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"

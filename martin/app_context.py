@@ -8,7 +8,7 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal
+from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor
 
 from martin.core.logging import get_logger
@@ -21,10 +21,10 @@ from martin.llm.router import ModelRouter
 from martin.memory.conversations import ConversationStore
 from martin.memory.manager import MemoryManager
 from martin.memory.store import MemoryStore
-from martin.paths import DB_PATH, SECURITY_LOG_PATH
+from martin.paths import DB_PATH, SECURITY_LOG_PATH, VAD_MODEL_PATH
 from martin.security.audit import AuditLog
 from martin.security.engine import PolicyEngine, ToolRegistry
-from martin.speech.stt import WhisperSTT
+from martin.speech.stt import AudioRecorder, PushToTalk, SileroVAD, WhisperSTT
 from martin.speech.tts import PiperTTS
 from martin.system.apps import AppRegistry
 from martin.system.windows import VolumeController
@@ -118,6 +118,11 @@ class AppContext(QObject):
             self.settings.stt_language,
         )
 
+        self.recorder = AudioRecorder(self.settings.mic_device or None)
+        vad = SileroVAD(str(VAD_MODEL_PATH))
+        vad.load()
+        self.push_to_talk = PushToTalk(self.stt, self.recorder, vad)
+
         # --- vidění ---
         self.screen_capture = ScreenCapture()
         self.vision = VisionAnalyzer(self.client, self.settings.local_model)
@@ -137,6 +142,7 @@ class AppContext(QObject):
         self._thread: QThread | None = None
         self._worker: Any | None = None
         self._busy = threading.Event()
+        self._listening = False
         self._last_model_label = ""
 
         self.monitor.add_callback(self._on_snapshot)
@@ -307,9 +313,54 @@ class AppContext(QObject):
             self.tts_status.emit("Piper není dostupný")
 
     def toggle_listening(self) -> None:
-        """Přepne režim poslouchání (push-to-talk)."""
-        self.status_message.emit("Poslouchání vyžaduje nakonfigurovaný mikrofon.")
+        """Přepne režim poslouchání (push-to-talk).
+
+        Při zapnutí se spustí nahrávání, při vypnutí se zvuk rozpozná
+        a odešle modelu jako zpráva.
+        """
+        if self._listening:
+            self._stop_listening()
+        else:
+            self._start_listening()
+
+    def _start_listening(self) -> None:
+        try:
+            ok = self.push_to_talk.start()
+        except Exception as exc:  # noqa: BLE001
+            self.status_message.emit(f"Mikrofon se nepodařilo zapnout: {exc}")
+            self.listening_changed.emit(False)
+            return
+        if not ok:
+            self.status_message.emit(
+                "Mikrofon není dostupný. Zkontroluj nastavení zařízení."
+            )
+            self.listening_changed.emit(False)
+            return
+        self._listening = True
+        self.listening_changed.emit(True)
+        self.status_message.emit("Poslouchám - řekni něco, pak stiskni znovu.")
+
+    def _stop_listening(self) -> None:
+        self._listening = False
         self.listening_changed.emit(False)
+        self.status_message.emit("Rozpoznávám řeč...")
+
+        def run() -> None:
+            try:
+                result = self.push_to_talk.stop()
+            except Exception as exc:  # noqa: BLE001
+                self.status_message.emit(f"Rozpoznání řeči selhalo: {exc}")
+                return
+            if result.error and not result.text:
+                self.status_message.emit(result.error)
+                return
+            if not result.text.strip():
+                self.status_message.emit("Nic jsem neslyšel.")
+                return
+            self.status_message.emit(f"Rozpoznáno: {result.text}")
+            QTimer.singleShot(0, lambda: self.send_message(result.text))
+
+        threading.Thread(target=run, name="martin-stt", daemon=True).start()
 
     def focus_input(self) -> None:
         pass
@@ -379,6 +430,10 @@ class AppContext(QObject):
             pass
         try:
             self.tts.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.recorder.stop()
         except Exception:  # noqa: BLE001
             pass
 

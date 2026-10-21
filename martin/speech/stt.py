@@ -58,6 +58,20 @@ class TranscriptionResult:
         return bool(self.text.strip()) and not self.error
 
 
+def resample(audio: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+    """Převzorkuje audio z source_rate na target_rate (lineární interpolace)."""
+    if source_rate == target_rate or len(audio) == 0:
+        return audio.astype(np.float32)
+    target_length = int(round(len(audio) * target_rate / float(source_rate)))
+    if target_length <= 0:
+        return np.array([], dtype=np.float32)
+    source_positions = np.linspace(0.0, len(audio) - 1, num=len(audio))
+    target_positions = np.linspace(0.0, len(audio) - 1, num=target_length)
+    return np.interp(
+        target_positions, source_positions, audio.astype(np.float32)
+    ).astype(np.float32)
+
+
 class WhisperSTT:
     """Rozpoznávání řeči pomocí faster-whisper."""
 
@@ -103,6 +117,20 @@ class WhisperSTT:
         except Exception:  # noqa: BLE001
             return "cpu"
 
+    def available(self) -> bool:
+        """Je rozpoznavani reci v tomto systemu dostupne?
+
+        Nekontroluje stahovani modelu, ale jen to, zda se da
+        nativni knihovna faster-whisper naloadit.
+        """
+        try:
+            import faster_whisper
+
+            del faster_whisper
+        except Exception:  # noqa: BLE001
+            return False
+        return True
+
     def _ensure_model(self) -> Any:
         """Načte model (lazy, thread-safe)."""
         with self._lock:
@@ -116,7 +144,9 @@ class WhisperSTT:
                 from faster_whisper import WhisperModel  # type: ignore
             except ImportError as exc:
                 raise RuntimeError(
-                    "Knihovna faster-whisper není nainstalována."
+                    "Rozpoznávání řeči není dostupné - faster-whisper se "
+                    "nepodařilo načíst (chybí knihovna nebo ji blokuje "
+                    "zásada zabezpečení Windows)."
                 ) from exc
             device = self._resolve_device()
             compute = self._compute_type
@@ -137,10 +167,17 @@ class WhisperSTT:
         self,
         audio: np.ndarray,
         language: str | None = None,
+        sample_rate: int = SAMPLE_RATE,
     ) -> TranscriptionResult:
-        """Rozpozná text z audia (float32 mono 16 kHz)."""
+        """Rozpozná text z audia (float32 mono).
+
+        Audio je v případě potřeby převzorkováno na 16 kHz, které
+        Whisper vyžaduje.
+        """
         if audio is None or len(audio) == 0:
             return TranscriptionResult(text="", error="Prázdné audio.")
+        if sample_rate and sample_rate != SAMPLE_RATE:
+            audio = resample(audio, sample_rate, SAMPLE_RATE)
         try:
             model = self._ensure_model()
         except RuntimeError as exc:
@@ -202,6 +239,15 @@ class AudioRecorder:
         self._lock = threading.RLock()
         self._active = False
 
+    def _resolve_device(self) -> int | str | None:
+        """Prevede nazev zarizeni na index, nebo vrati None."""
+        if self._device in (None, ""):
+            return None
+        try:
+            return int(self._device)
+        except (TypeError, ValueError):
+            return self._device
+
     def list_devices(self) -> list[dict[str, Any]]:
         """Seznam vstupních zařízení."""
         try:
@@ -223,7 +269,12 @@ class AudioRecorder:
             return []
 
     def start(self) -> bool:
-        """Zapne nahrávání."""
+        """Zapne nahrávání.
+
+        Zkusí nastavenou vzorkovací frekvenci; pokud ji zařízení
+        nepodporuje, zkusí nativní frekvenci zařízení a nakonec
+        48 kHz. Whisper si zvuk převede na 16 kHz sám.
+        """
         with self._lock:
             if self._active:
                 return True
@@ -239,23 +290,48 @@ class AudioRecorder:
                 with self._lock:
                     self._buffer.append(indata.copy().reshape(-1))
 
-            try:
-                self._stream = sd.InputStream(
-                    device=self._device,
-                    channels=1,
-                    samplerate=self._sample_rate,
-                    blocksize=FRAME_SIZE,
-                    dtype="float32",
-                    callback=callback,
-                )
-                self._stream.start()
-            except Exception as exc:  # noqa: BLE001
-                log.error("Zapnutí mikrofonu selhalo: %s", exc)
-                self._stream = None
-                return False
-            self._buffer.clear()
-            self._active = True
-            return True
+            device = self._resolve_device()
+            rates = [self._sample_rate]
+            native = self._native_rate(device)
+            for extra in (native, 48000, 44100):
+                if extra and extra not in rates:
+                    rates.append(int(extra))
+
+            last_error: Exception | None = None
+            for rate in rates:
+                try:
+                    self._stream = sd.InputStream(
+                        device=device,
+                        channels=1,
+                        samplerate=rate,
+                        blocksize=FRAME_SIZE,
+                        dtype="float32",
+                        callback=callback,
+                    )
+                    self._stream.start()
+                except Exception as exc:  # noqa: BLE001
+                    last_error = exc
+                    self._stream = None
+                    continue
+                self._sample_rate = rate
+                self._buffer.clear()
+                self._active = True
+                log.info("Nahrávání spuštěno: %s Hz, zařízení %s", rate, device)
+                return True
+
+            log.error("Zapnutí mikrofonu selhalo: %s", last_error)
+            return False
+
+    def _native_rate(self, device: int | str | None) -> int | None:
+        """Nativní vzorkovací frekvence zařízení."""
+        try:
+            import sounddevice as sd  # type: ignore
+
+            info = sd.query_devices(device, "input")
+            rate = info.get("default_samplerate")
+            return int(rate) if rate else None
+        except Exception:  # noqa: BLE001
+            return None
 
     def stop(self) -> np.ndarray:
         """Zastaví nahrávání a vrátí zaznamenané audio."""
@@ -278,6 +354,11 @@ class AudioRecorder:
     def active(self) -> bool:
         return self._active
 
+    @property
+    def sample_rate(self) -> int:
+        """Aktualni vzorkovaci frekvence nahravani."""
+        return self._sample_rate
+
     def is_speaking(self, threshold: float = 0.02) -> bool:
         """Jednoduchá detekce aktivity hlasu (RMS)."""
         with self._lock:
@@ -292,21 +373,30 @@ class AudioRecorder:
 
 
 class SileroVAD:
-    """Detekce hlasové aktivity přes Silero VAD (ONNX).
+    """Detekce hlasové aktivity přes Silero VAD (ONNX Runtime).
 
-    Pokud není model dostupný, použije se energetický detektor jako
-    záloha - aplikace pak hlásí, že používá záložní režim.
+    Model pracuje po 512 vzorcích (16 kHz). Vrstva drží stav mezi
+    voláními, takže je potřeba volat `is_speech` průběžně na blocích.
+
+    Pokud model není dostupný, použije se energetický detektor jako
+    záloha - aplikace pak v logu hlásí, že běží v záložním režimu.
     """
+
+    # Počet vzorků v jednom bloku pro Silero (16 kHz).
+    BLOCK_SIZE = 512
 
     def __init__(self, model_path: str | None = None, threshold: float = 0.5) -> None:
         self._model_path = model_path
         self._threshold = threshold
         self._session: Any | None = None
         self._available = False
+        self._state: Any | None = None
+        self._sample_rate = 16000
 
     def load(self) -> bool:
         """Načte ONNX model. Vrací True při úspěchu."""
         if not self._model_path or not Path(self._model_path).is_file():
+            self._available = False
             return False
         try:
             import onnxruntime  # type: ignore
@@ -314,6 +404,7 @@ class SileroVAD:
             self._session = onnxruntime.InferenceSession(
                 self._model_path, providers=["CPUExecutionProvider"]
             )
+            self._state = np.zeros((2, 1, 128), dtype=np.float32)
             self._available = True
             return True
         except Exception as exc:  # noqa: BLE001
@@ -325,20 +416,45 @@ class SileroVAD:
     def available(self) -> bool:
         return self._available
 
+    def reset(self) -> None:
+        """Resetuje stav mezi bloky (začátek nového nahrávání)."""
+        self._state = np.zeros((2, 1, 128), dtype=np.float32)
+
     def is_speech(self, audio: np.ndarray) -> bool:
         """Detekuje, zda audio obsahuje řeč."""
         if audio is None or len(audio) == 0:
             return False
         if self._available and self._session is not None:
             try:
-                tensor = audio.reshape(1, -1).astype(np.float32)
-                inputs = {
-                    inp.name: tensor for inp in self._session.get_inputs()
-                }
-                outputs = self._session.run(None, inputs)
-                return float(outputs[0].squeeze()) > self._threshold
+                return self._run_onnx(audio)
             except Exception as exc:  # noqa: BLE001
                 log.debug("VAD inference selhal: %s", exc)
         # Záloha: energetický detektor.
         rms = float(np.sqrt(np.mean(np.square(audio.astype(np.float32)))))
         return rms > 0.02
+
+    def _run_onnx(self, audio: np.ndarray) -> bool:
+        """Spustí Silero inference po 512vzorkových blocích."""
+        data = audio.astype(np.float32).reshape(-1)
+        block = self.BLOCK_SIZE
+        # Zbytek z predchoziho bloku doplnime zlomkem nuly.
+        remainder = getattr(self, "_remainder", np.array([], dtype=np.float32))
+        buffer = np.concatenate([remainder, data])
+        usable = (len(buffer) // block) * block
+        speech = False
+        for start in range(0, usable, block):
+            chunk = buffer[start : start + block].reshape(1, -1)
+            outputs = self._session.run(
+                None,
+                {
+                    "input": chunk,
+                    "state": self._state,
+                    "sr": np.array(self._sample_rate, dtype=np.int64),
+                },
+            )
+            probability = float(np.asarray(outputs[0]).reshape(-1)[0])
+            self._state = outputs[1]
+            if probability >= self._threshold:
+                speech = True
+        self._remainder = buffer[usable:].copy()
+        return speech
