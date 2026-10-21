@@ -4,7 +4,7 @@ ZIP obsahuje:
   Martin/Martin.exe      - spustitelná aplikace
   Martin/models/piper/   - české hlasy Piper
   Martin/models/vad/     - Silero VAD model (ONNX + whisper.cpp)
-  Martin/models/whisper/ - modely whisper.cpp pro rozpoznání řeči
+  Martin/models/whisper/ - model whisper.cpp "small" pro rozpoznání řeči
   README.txt              - krátké informace pro uživatele
   Spustit_Martin.bat      - zástupce pro spuštění
 """
@@ -69,10 +69,22 @@ def build_zip(build_dir: Path, out_zip: Path) -> Path:
     shutil.copytree(app_dir, stage)
 
     # Modely Piper a VAD - zkopirovat vedle exe.
+    # Modely whisper.cpp - pouze vychozi "small". Ostatni (base, tiny)
+    # jsou volitelne a daji se stahnout rucne - jinak by distribuce
+    # merila pres 1.4 GB.
+    #
+    # POZOR: model se nekopiruje vedle exe, pokud je uz v _internal
+    # (PyInstaller ho tam balil) - jinak by byl v distribuci dvakrat.
+    whisper_src = WHISPER_MODELS_DIR / "ggml-small.bin"
+    internal_model = stage / "_internal" / "models" / "whisper" / whisper_src.name
+    if whisper_src.is_file() and not internal_model.is_file():
+        whisper_dir = stage / "models" / "whisper"
+        whisper_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(whisper_src, whisper_dir / whisper_src.name)
+
     for src, rel in (
         (PIPER_VOICES_DIR, "models/piper"),
         (VAD_MODEL_DIR, "models/vad"),
-        (WHISPER_MODELS_DIR, "models/whisper"),
     ):
         if not src.is_dir():
             continue

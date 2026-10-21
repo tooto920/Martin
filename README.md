@@ -224,21 +224,64 @@ Výsledek:
 
 ---
 
+## Naměřené výkony
+
+Měřeno na tomto počítači (i7-14700HX, RTX 5070 Laptop, 32 GB RAM).
+Teplé modely = modely již načtené v paměti.
+
+### Hlasový vstup a výstup
+
+| Krok | Doba | Jak se měřilo |
+|---|---|---|
+| Aktivace mikrofonu | **1,0 ms** | návrat z `toggle_listening()` |
+| Zastavení nahrávání | **0,6 ms** | návrat z `toggle_listening()` |
+| Otevření zvukového zařízení | 0,27 s | reálné zařízení, mimo GUI vlákno |
+| Rozpoznání (model `small`, 4 s zvuku) | 3,9 s | whisper.cpp + VAD |
+| Rozpoznání (model `base`, 4 s zvuku) | 1,1 s | whisper.cpp + VAD |
+| Syntéza hlasu (in-proces) | **0,61 s** | pro 0,62 s audia (1,0x real-time) |
+| Syntéza hlasu (podproces, před opravou) | 11,7 s | pro 0,62 s audia (0,05x) |
+| Načtení Piper hlasu (warm-up) | 5,6 - 9,6 s | jednou, v pozadí |
+| Načtení modelu whisper.cpp | 0,2 - 3,0 s | jednou, v pozadí |
+
+### Kompletní cyklus odpovědi (teplé modely)
+
+| Krok | Doba |
+|---|---|
+| První token LLM | **0,28 - 0,42 s** |
+| Začátek mluvení (streamovací TTS) | **2,23 s** |
+| Začátek mluvení bez warm-upu | 12,69 s |
+
+### Responzivita GUI
+
+| Scénář | Největší pauza v GUI |
+|---|---|
+| Aktivace mikrofonu | 0,0 ms |
+| Během nahrávání | 0,0 ms |
+| Během rozpoznávání řeči | **11,2 ms** |
+
+Před opravou se GUI zastavilo na desítky sekund až minuty při aktivaci
+STT a při syntéze hlasu v zabalené aplikaci.
+
+---
+
 ## Omezení
 
 Přehled věcí, které **nejsou** hotové nebo byly ověřeny jen částečně:
 
-- **Rozpoznávání řeči (STT)** - na tomto počítači není dostupné. Zásada
-  zabezpečení Windows (WDAC, Policy ID `0283ac0f`) blokuje nativní
-  knihovnu `av/logging.pyd`, kterou faster-whisper potřebuje. Aplikace to
-  zjistí a hlásí, ale samotné rozpoznávání řeči neběží. Na jiném
-  počítači bez této zásady funguje.
-- **Výstup zvuku** - Piper syntetizuje řeč správně (ověřeno, 6,8 s české
-  audia), ale přehrávání nebylo ověřeno na tomto stroji, protože v
-  prostředí bez zvukové karty nešlo slyšet výstup.
-- **Mikrofon** - nahrávání se spouští a zvuk se zachycuje, ale v testovacím
-  prostředí je vstup prakticky tichý, takže rozpoznání vlastní řeči nebylo
-  provedeno.
+- **Rozpoznávání řeči (STT)** - běží přes **whisper.cpp** (`pywhispercpp`),
+  ne přes faster-whisper. Důvod: zásada zabezpečení Windows (WDAC,
+  Policy ID `0283ac0f`) blokuje nativní knihovnu `av/logging.pyd`, kterou
+  faster-whisper potřebuje. whisper.cpp používá vlastní knihovnu, která
+  zásadou dotčena není. Podporuje GPU (CUDA) i CPU.
+- **Slyšitelnost přehrávání** - Piper syntetizuje správně (ověřeno) a
+  zvuk se přehrává, ale v prostředí, ve kterém testy běžely, nebylo možné
+  výstup **slyšet**. Overeno je, že syntéza vrátí správné PCM audio
+  (22050 Hz, int16) a přehrávání ho bez chyby spotřebuje.
+- **Vlastní hlas uživatele** - nahrávání z reálného mikrofonu bylo ověřeno
+  (zařízení se otevře, signál se zachycuje), ale v testovacím prostředí
+  nikdo nevystupoval do mikrofonu. Rozpoznání vlastní řeči tedy nebylo
+  provedeno. Ověřeno bylo rozpoznání reálného zvuku syntetizovaného Piperem
+  a odmítnutí reálného šumu z mikrofonu.
 - **Volba zvukového zařízení** - seznam zařízení se načte, ale uložené
   nastavení se v UI ještě nepropisuje do konkrétního zařízení.
 - **Připnutí okna do systémové tray** - ikona funguje, ale chybí
