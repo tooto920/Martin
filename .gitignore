@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+*.spec
+
+# Virtuální prostředí
+.venv/
+venv/
+env/
+
+# Cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.uvcache/
+.uvpy/
+
+# Data aplikace (databáze, logy, nastavení)
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+logs/
+settings.json
+
+# Modely (Piper hlasy, Whisper)
+models/
+*.onnx
+*.onnx.json
+
+# Tajné údaje
+.env
+.env.*
+*.key
+*.pem
+secrets.json
+credentials.json
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+desktop.ini
+.DS_Store
+
+# Build artefakty
+build_output/
+*.exe.bak
+_install/
