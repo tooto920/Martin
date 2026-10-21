@@ -19,18 +19,20 @@ dependencies = [
     "numpy>=1.26",
     "sounddevice>=0.4.6",
     "mss>=9.0.1",
+    "pycaw>=20240210; sys_platform == 'win32'",
+    "comtypes>=1.4; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
-speech = ["faster-whisper>=1.0.3", "piper-tts>=1.8.0", "onnxruntime>=1.18"]
+speech = ["pywhispercpp==1.5.1", "piper-tts>=1.8.0", "onnxruntime>=1.18"]
 build = ["pyinstaller>=6.6"]
 dev = ["pytest>=8.2", "pytest-asyncio>=0.23", "pyflakes>=3.2"]
 
 [project.scripts]
 martin = "martin.__main__:main"
 
-[tool.setuptools]
-packages = ["martin"]
+[tool.setuptools.packages.find]
+include = ["martin*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

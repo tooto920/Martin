@@ -5,6 +5,11 @@ Běží lokálně na Ollama, hovoří česky (Piper), umí přečíst obrazovku
 a spravovat počítač - ale nikdy bez tvého vědomí a vždy pod bezpečnostní
 politikou, kterou vynucuje kód, ne model.
 
+Opravy stability a jejich skutečné ověření popisuje
+[český protokol opravy](docs/OPRAVA_STABILITY_2026-10-21.md).
+Hlášený okamžitý pád při zapnutí mikrofonu se zatím nepodařilo
+spolehlivě zopakovat; původní příčina není potvrzena.
+
 ---
 
 ## Obsah
@@ -45,8 +50,8 @@ politikou, kterou vynucuje kód, ne model.
 - **Piper TTS** - české hlasy Jirka a Kasandra, 100 % offline
 - Předčítání zkráceného souhrnu místo celé dlouhé odpovědi
 - Přerušitelné přehrávání, volitelné zvukové zařízení a rychlost
-- **Push-to-talk** - drž tlačítko, mluv, pusť
-- **Silero VAD** (ONNX) pro detekci řeči
+- Mikrofon zapneš tlačítkem nebo Ctrl+Shift+mezerník; dalším stiskem dokončíš nahrávku
+- **Silero VAD** ve whisper.cpp pro filtrování ticha před přepisem
 - Příkazy pro přerušení mluvení ("zastav", "ticho", "stop")
 
 ### Zrak

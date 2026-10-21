@@ -15,15 +15,10 @@ import argparse
 import shutil
 import sys
 import zipfile
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from martin.paths import (  # noqa: E402
-    PIPER_VOICES_DIR,
-    VAD_MODEL_DIR,
-    WHISPER_MODELS_DIR,
-)
 
 READ_ME = """\
 Martin 2.0 - osobni AI asistent pro Windows 11
@@ -61,38 +56,13 @@ def build_zip(build_dir: Path, out_zip: Path) -> Path:
     app_dir = build_dir / "Martin"
     if not (app_dir / "Martin.exe").is_file():
         raise SystemExit(f"Nelze najít Martin.exe v {app_dir}. Nejdřív sestav build.")
+    for name in ("whisper/ggml-small.bin", "vad/ggml-silero-vad.bin",
+                 "piper/cs_CZ-jirka-medium.onnx", "piper/cs_CZ-jirka-medium.onnx.json"):
+        if not (app_dir / "models" / name).is_file():
+            raise SystemExit(f"Neúplný build: chybí models/{name}. Použij packaging/build_windows.py.")
 
-    stage = build_dir / "_stage" / "Martin"
-    if stage.exists():
-        shutil.rmtree(stage)
-    stage.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix="martin-stage-", dir=build_dir)) / "Martin"
     shutil.copytree(app_dir, stage)
-
-    # Modely Piper a VAD - zkopirovat vedle exe.
-    # Modely whisper.cpp - pouze vychozi "small". Ostatni (base, tiny)
-    # jsou volitelne a daji se stahnout rucne - jinak by distribuce
-    # merila pres 1.4 GB.
-    #
-    # POZOR: model se nekopiruje vedle exe, pokud je uz v _internal
-    # (PyInstaller ho tam balil) - jinak by byl v distribuci dvakrat.
-    whisper_src = WHISPER_MODELS_DIR / "ggml-small.bin"
-    internal_model = stage / "_internal" / "models" / "whisper" / whisper_src.name
-    if whisper_src.is_file() and not internal_model.is_file():
-        whisper_dir = stage / "models" / "whisper"
-        whisper_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(whisper_src, whisper_dir / whisper_src.name)
-
-    for src, rel in (
-        (PIPER_VOICES_DIR, "models/piper"),
-        (VAD_MODEL_DIR, "models/vad"),
-    ):
-        if not src.is_dir():
-            continue
-        dest = stage.joinpath(*rel.split("/"))
-        dest.mkdir(parents=True, exist_ok=True)
-        for item in src.iterdir():
-            if item.is_file():
-                shutil.copy2(item, dest / item.name)
 
     (stage.parent / "README.txt").write_text(READ_ME, encoding="utf-8")
     (stage.parent / "Spustit_Martin.bat").write_text(
@@ -104,11 +74,12 @@ def build_zip(build_dir: Path, out_zip: Path) -> Path:
 
     out_zip.parent.mkdir(parents=True, exist_ok=True)
     if out_zip.exists():
-        out_zip.unlink()
+        raise SystemExit(f"Výstup již existuje, nic nebylo přepsáno: {out_zip}")
     with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for item in sorted(stage.parent.rglob("*")):
             if item.is_file():
                 zf.write(item, item.relative_to(stage.parent))
+    stage.parent.resolve().relative_to(build_dir.resolve())
     shutil.rmtree(stage.parent, ignore_errors=True)
     return out_zip
 
