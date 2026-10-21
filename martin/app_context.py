@@ -562,10 +562,12 @@ class AppContext(QObject):
         prvni odpoved cekala na to.
         """
         if self.settings.tts_enabled and not self._closing:
-            self.tts.warm_up()
+            if not self.tts.warm_up():
+                self.error_occurred.emit("Hlasový výstup není připravený. Zkontroluj úplnost složky models a Piper/eSpeak v distribuci; podrobnosti jsou v logu.")
         try:
             if not self._closing:
-                self.stt_backend.warm_up()
+                if not self.stt_backend.warm_up():
+                    self.error_occurred.emit("Rozpoznávání řeči není připravené. Zkontroluj model Whisper a VAD; podrobnosti jsou v logu.")
         except Exception as exc:  # noqa: BLE001
             log.info("Warm-up STT selhal: %s", exc)
 

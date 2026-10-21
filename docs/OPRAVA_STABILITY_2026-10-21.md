@@ -38,6 +38,8 @@ zvukového ovladače. Zabezpečení Windows nebylo měněno.
 - Validátor open_app dostává správné argumenty. Složky se validují a otevírají
   stejným převodem cesty. Konečný cíl nesmí být blokovaný interpret ani skript.
   Potvrzení citlivé akce platí jen pro konkrétní volání.
+  Snímek obrazovky vyžaduje vlastní potvrzení uživatele; o pořízení nemůže
+  rozhodnout sám model. Odkazy aplikací mají omezená URL schémata.
 - Win32 enumerace má správný callback a 64bitové typy. Snímek okna kontroluje
   výsledek PrintWindow/GetDIBits a uvolňuje GDI objekty. Virtuální plocha není
   chybně označena jako hlavní monitor. Obrazové instrukce mají systémové varování.
@@ -46,6 +48,12 @@ zvukového ovladače. Zabezpečení Windows nebylo měněno.
 - Build používá omezený PATH. Při prvním diagnostickém sestavení byl prokázán
   konflikt cizích CRT DLL z hostitelského prostředí, který znemožňoval import QtCore.
   Toto byla chyba diagnostického buildu, nikoli potvrzená příčina původního pádu.
+- Skutečné zabalené EXE skončilo při první syntéze hlasu kódem 1 bez Python
+  výjimky. Chyběla data piper/espeak-ng-data; stejný nativní exit(1) byl
+  reprodukován v samostatném procesu. Spec nyní tato data zahrnuje a TTS
+  kontroluje nezbytné soubory dříve, než zavolá nativní fonemizér. I původní
+  lokální balíček tato data postrádal. Není doloženo, že to vyvolávalo
+  uživatelův okamžitý pád mikrofonu, protože k selhání dochází až při syntéze.
 
 ## Opakovatelné příkazy (PowerShell v kořeni projektu)
 

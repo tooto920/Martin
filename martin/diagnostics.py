@@ -37,8 +37,14 @@ def run_diagnostics(report_path: str, cycles: int = 12) -> int:
     ctx.error_occurred.connect(lambda error: report["errors"].append(error))
     ctx.start()
 
+    def save_report():
+        target = Path(report_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
     def check(name, condition, **details):
         report["checks"][name] = {"ok": bool(condition), **details}
+        save_report()
         if not condition:
             raise RuntimeError(f"Kontrola selhala: {name}")
 

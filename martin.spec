@@ -8,6 +8,7 @@ a jednoduchsi pristup k modelum Piper vedle exe).
 import os
 import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files
 
 PROJECT = Path(SPECPATH)
 MODELS = PROJECT / "models"
@@ -21,7 +22,7 @@ os.environ["PATH"] = os.pathsep.join([
 # Modely Piper jsou vetsi nez 60 MB - pri baleni dovnitr exe by build
 # trval neumerousne dlouho a exe by narostlo. Radji je nechame
 # vedle v adresari models/ a pri instalaci je zkopirujeme.
-datas = []
+datas = collect_data_files("piper")
 if (MODELS / "vad" / "silero_vad.onnx").is_file():
     datas.append((str(MODELS / "vad" / "silero_vad.onnx"), "models/vad"))
 if (MODELS / "vad" / "ggml-silero-vad.bin").is_file():

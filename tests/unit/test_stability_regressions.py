@@ -231,3 +231,18 @@ def test_vram_unload_is_not_verified_when_model_is_still_loaded(monkeypatch):
     released, detail = HardwareManager(None)._unload_model("http://localhost:11434", "test:latest")
     assert not released and "stále načtený" in detail
     assert responses == ["/api/chat", "/api/ps"]
+
+
+def test_missing_espeak_data_is_rejected_before_native_exit(tmp_path):
+    from martin.speech.tts import PiperTTS
+    with pytest.raises(RuntimeError, match="Chybí data Piper/eSpeak"):
+        PiperTTS._validate_phonemizer_data(tmp_path)
+
+
+def test_model_cannot_capture_screen_without_user_confirmation(audit_log):
+    from martin.tools.tools import ToolSet
+    from martin.security.engine import PolicyEngine, ToolRegistry
+    registry = ToolSet(ToolRegistry(), object(), volume=object()).register_all()
+    decision, result = PolicyEngine(registry, audit_log).execute("analyze_screen", {"question": "Popiš obrazovku"})
+    assert decision.needs_confirmation
+    assert result is None

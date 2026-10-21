@@ -1,16 +1,7 @@
-"""Syntéza řeči přes Piper - plně offline, s českými hlasy.
+"""Offline česká syntéza Piper s kontrolou dat před nativní inicializací.
 
-DŮLEŽITÉ: Piper se volá IN-PROCES (přes `piper.PiperVoice`), ne jako
-podproces. Podproces měl dva problémy:
-  1. V balíčku PyInstaller není `python.exe`, takže `-m piper` ve
-     skutečnosti spustilo MARTINA SAMOTNÉHO (novou instanci GUI) a
-     volání čekalo na timeout - přesně dvě minuty.
-  2. Start podprocesu trval ~9 s, takže i v IDE byla odezva 18x
-     pomalejší než v reálném čase.
-
-In-proces volání je 8x rychlejší a funguje i v zabalené aplikaci.
-
-Přehrávání zajišťuje sounddevice, takže je kdykoli přerušitelné.
+Syntéza běží v pracovním vlákně, přehrávání vlastní svůj sounddevice stream.
+Konkrétní latence závisí na hardwaru; měří ji diagnostický režim.
 """
 
 from __future__ import annotations
@@ -97,8 +88,10 @@ class PiperTTS:
     def _piper_importable() -> bool:
         try:
             from piper import PiperVoice
+            from piper.phonemize_espeak import ESPEAK_DATA_DIR
 
             _ = PiperVoice
+            PiperTTS._validate_phonemizer_data(ESPEAK_DATA_DIR)
             return True
         except Exception:  # noqa: BLE001
             return False
@@ -136,6 +129,7 @@ class PiperTTS:
         start = _time.perf_counter()
         try:
             from piper import PiperVoice
+            from piper.phonemize_espeak import ESPEAK_DATA_DIR
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(
                 "Piper není dostupný - knihovna piper-tts není nainstalována."
@@ -144,6 +138,8 @@ class PiperTTS:
         model = self.voice_path()
         if model is None:
             raise RuntimeError("Není dostupný žádný český Piper hlas.")
+
+        self._validate_phonemizer_data(ESPEAK_DATA_DIR)
 
         config = model.with_suffix(model.suffix + ".json")
         if config.is_file():
@@ -158,6 +154,15 @@ class PiperTTS:
             self._load_s = elapsed
         log.info("Piper hlas %s nacten za %.2f s", self._voice, elapsed)
         return voice
+
+    @staticmethod
+    def _validate_phonemizer_data(directory: Path) -> None:
+        # eSpeak's native initializer calls exit(1) for missing data, which
+        # cannot be caught by Python/faulthandler. Check before entering it.
+        required = ("phontab", "phonindex", "phondata", "intonations", "cs_dict", "lang/zlw/cs")
+        missing = [name for name in required if not (directory / name).is_file()]
+        if missing:
+            raise RuntimeError("Chybí data Piper/eSpeak: " + ", ".join(missing) + ". Rozbal celou distribuci Martina.")
 
     def warm_up(self) -> bool:
         """Nacte hlas dopredu, aby prvni odpoved znela okamzite.

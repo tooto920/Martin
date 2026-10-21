@@ -352,7 +352,7 @@ class ToolSet:
         r.register(
             "analyze_screen",
             "Vyfotí obrazovku a nechá model ji analyzovat.",
-            SecurityLevel.SAFE,
+            SecurityLevel.CONFIRM,
             self._analyze_screen,
             parameters={
                 "type": "object",
@@ -387,6 +387,8 @@ class ToolSet:
             if entry.kind == "steam":
                 os.startfile(entry.target)  # registered steam://rungameid URI
             elif entry.kind == "url":
+                if not entry.target.lower().startswith(("http://", "https://", "steam://rungameid/")):
+                    return {"ok": False, "error": "Nepovolené schéma odkazu aplikace."}
                 os.startfile(entry.target)  # noqa: S606 - cíl je z registru/start menu
             else:
                 target = self._apps.resolve_target(entry)
