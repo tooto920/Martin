@@ -52,6 +52,11 @@ Desktop.ini
 desktop.ini
 .DS_Store
 
+# Pomocne skripty
+_w.py
+_patch*.py
+_e2e*.py
+
 # Build artefakty
 build_output/
 *.exe.bak
