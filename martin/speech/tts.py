@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from martin.core.logging import get_logger
 from martin.paths import find_piper_voice
 
@@ -186,6 +188,7 @@ class PiperTTS:
             return False
 
         if dtype != 2:
+            log.warning("Piper WAV má neočekávanou šířku vzorku: %s", dtype)
             return False
 
         device = None
@@ -206,11 +209,15 @@ class PiperTTS:
                 device=device,
             ) as stream:
                 self._stream = stream
+                # sounddevice s int16 streamem chce numpy pole, ne raw bytes.
+                samples = np.frombuffer(frames, dtype=np.int16)
                 block = samplerate // 20
-                total = len(frames) // 2
                 offset = 0
+                total = len(samples)
                 while offset < total and not self._stop_event.is_set():
-                    chunk = frames[offset * 2 : (offset + block) * 2]
+                    chunk = samples[offset : offset + block]
+                    if len(chunk) == 0:
+                        break
                     stream.write(chunk)
                     offset += block
                 stream.stop()
@@ -228,14 +235,25 @@ class PiperTTS:
         return not self._stop_event.is_set()
 
     def stop(self) -> None:
-        """Zastaví přehrávání."""
+        """Zastaví přehrávání.
+
+        Při ukončení aplikace se často zastavuje už zavřený stream -
+        proto je každý krok v samostatném try, aby se ukončovací
+        kód aplikace nezhroutil.
+        """
         self._stop_event.set()
         with self._lock:
-            if self._stream is not None:
-                try:
-                    self._stream.abort()
-                except Exception:  # noqa: BLE001
-                    pass
+            stream = self._stream
+            self._stream = None
+        if stream is not None:
+            try:
+                stream.abort()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     @property
     def is_playing(self) -> bool:

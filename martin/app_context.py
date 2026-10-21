@@ -251,6 +251,7 @@ class AppContext(QObject):
         worker.chunk.connect(self.stream_chunk)
         worker.finished.connect(self._on_finished)
         worker.error.connect(self._on_worker_error)
+        worker.confirm.connect(self._on_worker_confirm)
 
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
@@ -265,6 +266,15 @@ class AppContext(QObject):
         self.status_message.emit("Připraven")
         if self.settings.speak_replies and self.settings.tts_enabled and text.strip():
             self.speak(text)
+
+    def _on_worker_confirm(self, tool: str, args: dict) -> None:
+        """Předá žádost o potvrzení do UI a čeká na odpověď.
+
+        UI (MainWindow) zobrazí dialog a zavolá `respond_confirm`.
+        Pokud není žádné UI (např. test), akce se po krátké prodlevě
+        automaticky zamítne - bezpečná výchozí volba.
+        """
+        self.confirm_requested.emit(tool, args)
 
     def _on_worker_error(self, message: str) -> None:
         self._busy.clear()
@@ -294,13 +304,17 @@ class AppContext(QObject):
             content = self.tts.summarize_for_speech(text)
 
         def run() -> None:
-            self.speaking_changed.emit(True)
             try:
+                self.speaking_changed.emit(True)
                 self.tts.speak(content)
             except Exception as exc:  # noqa: BLE001
                 log.warning("Přehrávání hlasu selhalo: %s", exc)
             finally:
-                self.speaking_changed.emit(False)
+                try:
+                    self.speaking_changed.emit(False)
+                except RuntimeError:
+                    # Aplikace se mezitim ukoncuje - signal uz neni platny.
+                    pass
 
         threading.Thread(target=run, name="martin-tts", daemon=True).start()
 
@@ -425,22 +439,16 @@ class AppContext(QObject):
 
     def shutdown(self) -> None:
         """Ukončí aplikaci - uvolní zdroje."""
-        try:
-            self.monitor.stop()
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Zastavení monitoru selhalo: %s", exc)
-        try:
-            self.client.close()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            self.tts.stop()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            self.recorder.stop()
-        except Exception:  # noqa: BLE001
-            pass
+        for name, action in (
+            ("monitor", self.monitor.stop),
+            ("tts", self.tts.stop),
+            ("recorder", self.recorder.stop),
+            ("client", self.client.close),
+        ):
+            try:
+                action()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Ukoncovani %s selhalo: %s", name, exc)
 
     # -- vnitřní adaptér pro nástroj analyze_screen ---------------------
     class _VisionAdapter:
@@ -463,6 +471,7 @@ class _ChatWorker(QObject):
     chunk = _Signal(str)
     finished = _Signal(str, str)
     error = _Signal(str)
+    confirm = _Signal(str, dict)
 
     def __init__(self, ctx: AppContext, messages: list[ChatMessage]) -> None:
         super().__init__()
@@ -488,6 +497,15 @@ class _ChatWorker(QObject):
             elif event is OrchestratorEvent.TOOL_CALL:
                 self._ctx.status_message.emit(
                     f"Provádím akci: {data.get('tool', '')}"
+                )
+            elif event is OrchestratorEvent.CONFIRM_REQUEST:
+                # Předání žádosti o potvrzení do UI. Orchestrátor v tuto
+                # chvíli čeká na odpověď (max 120 s).
+                self._ctx.status_message.emit(
+                    f"Vyžaduje potvrzení: {data.get('tool', '')}"
+                )
+                self.confirm.emit(
+                    str(data.get("tool", "")), dict(data.get("args") or {})
                 )
 
         try:

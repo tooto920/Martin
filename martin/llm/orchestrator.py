@@ -57,11 +57,13 @@ class Orchestrator:
         policy: PolicyEngine,
         router: ModelRouter,
         system_prompt: str = "",
+        confirm_timeout: float = 120.0,
     ) -> None:
         self._client = client
         self._policy = policy
         self._router = router
         self._system_prompt = system_prompt
+        self._confirm_timeout = confirm_timeout
         self._lock = threading.RLock()
         self._pending_confirm: ToolCallRequest | None = None
         self._confirm_event = threading.Event()
@@ -236,11 +238,7 @@ class Orchestrator:
             request = ToolCallRequest(
                 tool=name, args=args, reason=decision.reason, call_id=call_id
             )
-            emit(
-                OrchestratorEvent.CONFIRM_REQUEST,
-                {"tool": name, "args": args, "reason": decision.reason},
-            )
-            approved = self._ask_user(request)
+            approved = self._ask_user(request, emit)
             if not approved:
                 emit(OrchestratorEvent.TOOL_RESULT, {"tool": name, "result": "zamítnuto"})
                 return None
@@ -254,14 +252,39 @@ class Orchestrator:
             tool_name=name,
         )
 
-    def _ask_user(self, request: ToolCallRequest) -> bool:
-        self._confirm_event.clear()
+    def _ask_user(
+        self,
+        request: ToolCallRequest,
+        emit: Callable[[OrchestratorEvent, dict[str, Any]], None],
+    ) -> bool:
+        """Ceка na odpoved uzivatele.
+
+        Poradi je dulezite: stav se musi nastavit AZ PO vypnuti udalosti
+        a JEště PŘED vyvoláním `emit`. Kdyby se emitoval podriv pred
+        tim, uzivatel by mohl odpovedet drive, nez bude stav nastaven -
+        a jeho odpoved by se ztratila (nebo by se cekalo 120 s).
+        """
         with self._lock:
+            self._confirm_event.clear()
             self._pending_confirm = request
             self._confirm_result = False
-        self._confirm_event.wait(timeout=120.0)
+
+        # Uzivatel muze odpovedet okamzite - proto je stav pripraveny
+        # jeste pred timto vyzvanim.
+        emit(
+            OrchestratorEvent.CONFIRM_REQUEST,
+            {
+                "tool": request.tool,
+                "args": request.args,
+                "reason": request.reason,
+            },
+        )
+
+        self._confirm_event.wait(timeout=self._confirm_timeout)
         with self._lock:
-            return self._confirm_result
+            approved = self._confirm_result
+            self._pending_confirm = None
+        return approved
 
     @staticmethod
     def _parse_args(raw: Any) -> dict[str, Any]:
