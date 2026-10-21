@@ -60,14 +60,14 @@ zvukového ovladače. Zabezpečení Windows nebylo měněno.
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m pyflakes martin packaging
-.\.venv\Scripts\python.exe packaging\build_windows.py --out build_output\repaired
+.\.venv\Scripts\python.exe packaging\build_windows.py --out build_output\repaired-release
 $env:MARTIN_DATA_DIR = "$PWD\build_output\audit\vlastni-novy-test"
-& .\build_output\repaired\Martin\Martin.exe --diagnose-voice "$PWD\build_output\audit\vlastni-report.json" 12
-.\.venv\Scripts\python.exe packaging\make_installer.py --build-dir build_output\repaired --out build_output\Martin-2.0-repaired-win64.zip
+& .\build_output\repaired-release\Martin\Martin.exe --diagnose-voice "$PWD\build_output\audit\vlastni-report.json" 12
+.\.venv\Scripts\python.exe packaging\make_installer.py --build-dir build_output\repaired-release --out build_output\Martin-2.0-repaired-win64.zip
 ```
 
 Pro normální spuštění odstraň testovací MARTIN_DATA_DIR z aktuálního terminálu
-a spusť `build_output\repaired\Martin\Martin.exe`. Data běžné instalace jsou
+a spusť `build_output\repaired-release\Martin\Martin.exe`. Data běžné instalace jsou
 v `%LOCALAPPDATA%\Martin`; diagnostika má používat vlastní nový adresář.
 Build i ZIP odmítají přepsání existujícího cíle. ZIP se rozbaluje celý,
 včetně `_internal` a `models`. Build-manifest.json obsahuje commit a SHA-256 souborů.
@@ -83,8 +83,15 @@ aritmetický dotaz. Ukončení vlastního dekodéru je řízená injekce chyby.
 
 ## Dosavadní měření a hranice důkazů
 
-Původní sada: **254 testů prošlo**. Rozšířená sada: **267 testů prošlo za
-45,14 s**, včetně skutečného Ollama/STT a snímku vlastního testovacího Qt okna.
+Původní sada: **254 testů prošlo**. Finální rozšířená sada: **270 testů prošlo za
+54,05 s, 1 test byl přeskočen**, včetně skutečného Ollama/STT a snímku vlastního
+testovacího Qt okna. Přeskočený test vyžaduje cestu k EXE a spouští se zvlášť:
+
+```powershell
+$env:MARTIN_TEST_PACKAGED_EXE = "$PWD\build_output\repaired-release\Martin\Martin.exe"
+.\.venv\Scripts\python.exe -m pytest tests\integration\test_packaged_voice.py -q
+```
+
 Pyflakes prošel bez nálezů. Část testů používá řízené náhrady ovladačů; výsledek
 sady sám o sobě není důkazem funkčnosti celé distribuce.
 
@@ -104,4 +111,31 @@ není úplnou ochranou proti všem prompt injection; autorizace nástrojů zůst
 samostatně v aplikačním kódu. Souvislost opravených závad s původním pádem
 musí potvrdit další reprodukce nebo lokální uživatelský test.
 
-Ověření finálního EXE a ZIP bude zaznamenáno do závěrečného protokolu distribuce.
+## Další hranice auditu
+
+Automatické rozhodnutí SMART podle tlaku na VRAM není úplně propojeno s
+chatovou cestou; směrování dnes rozhoduje hlavně podle složitosti dotazu.
+Přepnutí profilu nástrojem také není plně synchronizované s uloženým profilem
+GUI. Pro nastavení profilu používej stránku Nastavení; skutečný přesun modelu
+mezi CPU/GPU ani fyzické uvolnění VRAM v tomto průchodu nebyly potvrzeny.
+Tento protokol tedy není potvrzením úplného dokončení všech požadavků auditu.
+
+## Distribuce a GUI
+
+Finální aplikační kód sestavený z commitu `db81584` prošel samostatným testem
+EXE (56,70 s). Kontrola porovnávala SHA-256 všech souborů z manifestu,
+obsah modelů a data eSpeak, skutečný mikrofon, STT, TTS, lokální Ollama i úklid.
+Stejný test čerstvě rozbaleného finálního ZIP také prošel (45,68 s).
+Každý běh ověřil 12 nahrávek a 24 rychlých zrušení; žádná kontrola neselhala.
+Podrobná měření jsou v přiloženém závěrečném protokolu a JSON.
+
+GUI bylo ovládáno přes Windows UI Automation: zapnutí i vypnutí mikrofonu
+tlačítkem a Ctrl+Shift+mezerník, odmítnutí nahrávky bez řeči, dva navazující
+české dotazy („Dva plus dva je čtyři.“ a „Třikrát tři je devět.“), oddělené
+bubliny a ukončení Ctrl+Q. Proces GUI i jeho STT proces po ukončení zmizely.
+Po vizuální kontrole se opravily počáteční modelové/hlasové popisky,
+stav panelu po přehrávání a zobrazení českých diagnostických údajů; regresi
+pokrývá skutečný Qt test. Poslední EXE bylo navíc spuštěno s chybějícím modelem
+Whisper/VAD: zůstalo funkční a zobrazilo českou chybu, potom se normálně zavřelo.
+
+Nejde o dlouhodobý zátěžový test ani ověření všech zařízení a všech ovladačů.
