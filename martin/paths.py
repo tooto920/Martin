@@ -45,10 +45,12 @@ def _models_dir() -> Path:
         return Path(override).expanduser().resolve()
     if getattr(sys, "frozen", False):
         base = _base_dir()
+        # Poradi: modely VEDLE exe (tak to instaluje make_installer),
+        # pak _internal (PyInstaller onedir), pak _MEIPASS.
         candidates = [
             base / "models",
-            Path(getattr(sys, "_MEIPASS", base)) / "models",
             base / "_internal" / "models",
+            Path(getattr(sys, "_MEIPASS", base)) / "models",
         ]
         for candidate in candidates:
             if candidate.is_dir():
@@ -98,7 +100,11 @@ def ensure_dirs() -> None:
 
 
 def _piper_search_dirs() -> list[Path]:
-    """Adresáře, ve kterých se hledají české hlasy Piper."""
+    """Adresáře, ve kterých se hledají české hlasy Piper.
+
+    Hlasy váží přes 60 MB každý, proto se NEBALÍ do exe - instalují se
+    vedle něj. Hledáme proto na všech rozumných mistech.
+    """
     dirs = [PIPER_VOICES_DIR]
     if getattr(sys, "frozen", False):
         base = _base_dir()
@@ -109,6 +115,10 @@ def _piper_search_dirs() -> list[Path]:
         ):
             if extra not in dirs:
                 dirs.append(extra)
+    # Zdrojovy repozitar (pro vyvoj z balicku vedle exe).
+    source = _base_dir() / "models" / "piper"
+    if source not in dirs:
+        dirs.append(source)
     return dirs
 
 

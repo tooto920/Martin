@@ -32,7 +32,12 @@ log = get_logger("martin.speech.whispercpp_backend")
 SAMPLE_RATE = 16000
 
 # Rucni prah RMS - pod tim je signalu považovano za ticho.
-DEFAULT_SILENCE_RMS = 0.006
+#
+# Dulezite: hlavni obrana proti halucinacim je vestaveny Silero VAD
+# whisper.cpp (ten rozpoznal i realny sum mikrofonu - 0 segmentu).
+# RMS prah je jen hrana rychleho odmictnuti, proto je nizky, aby
+# neodmital tichou reč.
+DEFAULT_SILENCE_RMS = 0.0008
 # Delka minimalniho uspechneho prepisu.
 MIN_TRANSCRIPT_CHARS = 2
 # Vsechny tyhle vety whisper vymysli ze ticha - je to tzv. hallucination.
@@ -285,7 +290,8 @@ class WhisperCppBackend:
         rms = float(np.sqrt(np.mean(np.square(data))))
         diagnostics.audio_rms = rms
 
-        # 1) Ticho/šum - prah RMS.
+        # 1) Ticho - rychlá kontrola RMS. Hlavní filtr je Silero VAD
+        #    v kroku 2, ktery rozezná i tichou řeč od šumu.
         if rms < self._silence_rms:
             diagnostics.rejected_reason = (
                 f"ticho (rms {rms:.5f} < {self._silence_rms:.5f})"

@@ -139,6 +139,10 @@ class SettingsPage(QWidget):
 
         self._stt_model = QComboBox()
         self._stt_model.addItems(["tiny", "base", "small", "medium"])
+        self._stt_model.setToolTip(
+            "whisper.cpp modely. 'small' je doporuceno pro cesku; "
+            "proti kratke je 'base' rychlejsi."
+        )
         form.addRow("Model rozpoznávání:", self._stt_model)
 
         self._stt_info = QLabel("")
@@ -147,8 +151,8 @@ class SettingsPage(QWidget):
         form.addRow("", self._stt_info)
 
         self._stt_silence = QDoubleSpinBox()
-        self._stt_silence.setRange(0.0, 0.05)
-        self._stt_silence.setSingleStep(0.001)
+        self._stt_silence.setRange(0.0, 0.01)
+        self._stt_silence.setSingleStep(0.0002)
         self._stt_silence.setDecimals(3)
         form.addRow("Práh ticha (RMS):", self._stt_silence)
 
@@ -244,7 +248,7 @@ class SettingsPage(QWidget):
         self._stt_model.setCurrentText(settings.stt_model)
         self._stt_language.setCurrentText(settings.stt_language)
         self._stt_silence.setValue(
-            float(settings.extra.get("stt_silence_rms", 0.006))
+            float(settings.extra.get("stt_silence_rms", 0.0008))
         )
         self._refresh_stt_info()
         self._wake_word.setChecked(settings.wake_word_enabled)

@@ -3,7 +3,8 @@
 ZIP obsahuje:
   Martin/Martin.exe      - spustitelná aplikace
   Martin/models/piper/   - české hlasy Piper
-  Martin/models/vad/     - Silero VAD model
+  Martin/models/vad/     - Silero VAD model (ONNX + whisper.cpp)
+  Martin/models/whisper/ - modely whisper.cpp pro rozpoznání řeči
   README.txt              - krátké informace pro uživatele
   Spustit_Martin.bat      - zástupce pro spuštění
 """
@@ -18,7 +19,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from martin.paths import PIPER_VOICES_DIR, VAD_MODEL_DIR  # noqa: E402
+from martin.paths import (  # noqa: E402
+    PIPER_VOICES_DIR,
+    VAD_MODEL_DIR,
+    WHISPER_MODELS_DIR,
+)
 
 READ_ME = """\
 Martin 2.0 - osobni AI asistent pro Windows 11
@@ -67,6 +72,7 @@ def build_zip(build_dir: Path, out_zip: Path) -> Path:
     for src, rel in (
         (PIPER_VOICES_DIR, "models/piper"),
         (VAD_MODEL_DIR, "models/vad"),
+        (WHISPER_MODELS_DIR, "models/whisper"),
     ):
         if not src.is_dir():
             continue

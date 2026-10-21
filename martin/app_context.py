@@ -141,7 +141,7 @@ class AppContext(QObject):
             models_dir=WHISPER_MODELS_DIR,
             language=self.settings.stt_language,
             vad_model_path=WHISPER_VAD_MODEL,
-            silence_rms=float(self.settings.extra.get("stt_silence_rms", 0.006)),
+            silence_rms=float(self.settings.extra.get("stt_silence_rms", 0.0008)),
         )
         self.voice_pipeline = VoicePipeline(
             self.stt_backend,
@@ -437,7 +437,7 @@ class AppContext(QObject):
             self.stt_backend.set_model(self.settings.stt_model)
             self.stt_backend.set_language(self.settings.stt_language)
             self.stt_backend.set_silence_threshold(
-                float(self.settings.extra.get("stt_silence_rms", 0.006))
+                float(self.settings.extra.get("stt_silence_rms", 0.0008))
             )
             self.model_changed.emit(self.current_model_label())
             self._emit_tts_status()
