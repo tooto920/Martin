@@ -246,3 +246,26 @@ def test_model_cannot_capture_screen_without_user_confirmation(audit_log):
     decision, result = PolicyEngine(registry, audit_log).execute("analyze_screen", {"question": "Popiš obrazovku"})
     assert decision.needs_confirmation
     assert result is None
+
+
+def test_voice_panel_leaves_speaking_state_after_playback(qapp):
+    from PySide6.QtCore import QObject, Signal
+    from martin.core.settings import Settings
+    from martin.ui.widgets.monitor_panel import MonitorPanel
+    class Context(QObject):
+        snapshot_updated = Signal(object)
+        profile_changed = Signal(str, str)
+        listening_changed = Signal(bool)
+        speaking_changed = Signal(bool)
+        tts_status = Signal(str)
+        voice_diagnostics = Signal(dict)
+        voice_stage = Signal(object)
+        settings = Settings()
+        _listening = False
+    context = Context()
+    panel = MonitorPanel(context)
+    context.speaking_changed.emit(True)
+    assert panel._mic_state.text() == "Hlas: mluvím"
+    context.speaking_changed.emit(False)
+    assert panel._mic_state.text() == "Mikrofon: neaktivní"
+    panel.deleteLater()

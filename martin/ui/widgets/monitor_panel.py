@@ -182,7 +182,9 @@ class MonitorPanel(QWidget):
 
     def _on_speaking(self, active: bool) -> None:
         if active:
-            self._mic_state.setText("Mikrofon: mluvím")
+            self._mic_state.setText("Hlas: mluvím")
+        else:
+            self._mic_state.setText("Mikrofon: poslouchám" if self._ctx._listening else "Mikrofon: neaktivní")
 
     def _on_tts(self, info: str) -> None:
         self._voice.setText(info)
@@ -224,8 +226,12 @@ class MonitorPanel(QWidget):
         if stage is None:
             return
         name = getattr(stage, "value", str(stage))
-        if name in ("recording", "transcribing"):
-            self._stt_info.setText(f"STT: {name}")
+        if name == "recording":
+            self._stt_info.setText("STT: nahrávám")
+        elif name == "transcribing":
+            self._stt_info.setText("STT: rozpoznáno" if getattr(event, "text", "") else "STT: rozpoznávám")
+        elif name == "cancelled":
+            self._stt_info.setText("STT: zrušeno")
 
     def refresh_theme(self) -> None:
         self._theme = get_theme(self._ctx.settings.theme)

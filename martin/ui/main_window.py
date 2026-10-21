@@ -56,6 +56,10 @@ class MainWindow(QMainWindow):
         self._build_tray()
         self._build_shortcuts()
         self._connect_signals()
+        self._ctx.model_changed.emit(self._ctx.current_model_label())
+        self._ctx._emit_tts_status()
+        definition = self._ctx.hardware.definition
+        self._ctx.profile_changed.emit(definition.name, definition.description)
 
     # -- sestavení UI ---------------------------------------------------
     def _build_ui(self) -> None:

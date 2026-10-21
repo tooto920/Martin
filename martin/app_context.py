@@ -465,8 +465,9 @@ class AppContext(QObject):
             self._listening = False
             self.listening_changed.emit(False)
             self.status_message.emit(event.message or event.error or "Chyba hlasu.")
-        if event.diagnostics:
-            self.voice_diagnostics.emit(event.diagnostics)
+        diagnostics = dict(event.diagnostics.get("diagnostics", event.diagnostics))
+        diagnostics["timings"] = event.timings.to_dict()
+        self.voice_diagnostics.emit(diagnostics)
         self.voice_stage.emit(event)
 
     def cancel_voice(self) -> None:
