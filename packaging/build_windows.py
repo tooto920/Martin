@@ -18,9 +18,10 @@ def build(destination: Path):
     if destination.exists():
         raise SystemExit(f"Cíl už existuje; zvol novou složku: {destination}")
     env = os.environ.copy()
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
     env["PATH"] = os.pathsep.join([
         str(Path(sys.executable).parent), sys.base_prefix,
-        str(Path(env["SystemRoot"]) / "System32"), env["SystemRoot"],
+        str(Path(system_root) / "System32"), system_root,
     ])
     subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm",
                     "--distpath", str(destination), "--workpath", str(destination.parent / (destination.name + "-work")),
