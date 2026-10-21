@@ -122,6 +122,20 @@ class MonitorPanel(QWidget):
         voice_layout.addWidget(self._mic_state)
         layout.addWidget(voice_box)
 
+        # --- Diagnostika hlasu ---
+        voice_diag = QGroupBox("Hlasová diagnostika")
+        diag_layout = QVBoxLayout(voice_diag)
+        diag_layout.setSpacing(4)
+        self._timings = QLabel("Zatím bez měření")
+        self._timings.setObjectName("Subtitle")
+        self._timings.setWordWrap(True)
+        diag_layout.addWidget(self._timings)
+        self._stt_info = QLabel("STT: nezjištěno")
+        self._stt_info.setObjectName("Subtitle")
+        self._stt_info.setWordWrap(True)
+        diag_layout.addWidget(self._stt_info)
+        layout.addWidget(voice_diag)
+
         layout.addStretch(1)
 
     def _connect(self) -> None:
@@ -130,6 +144,8 @@ class MonitorPanel(QWidget):
         self._ctx.listening_changed.connect(self._on_listening)
         self._ctx.speaking_changed.connect(self._on_speaking)
         self._ctx.tts_status.connect(self._on_tts)
+        self._ctx.voice_diagnostics.connect(self._on_voice_diagnostics)
+        self._ctx.voice_stage.connect(self._on_voice_stage)
 
     def _on_snapshot(self, snapshot: Any) -> None:
         self._cpu.set_value(snapshot.cpu_percent)
@@ -170,6 +186,46 @@ class MonitorPanel(QWidget):
 
     def _on_tts(self, info: str) -> None:
         self._voice.setText(info)
+
+    def _on_voice_diagnostics(self, data: dict) -> None:
+        """Zobrazí diagnostiku posledního hlasového cyklu."""
+        if not isinstance(data, dict):
+            return
+        timings = data.get("timings") or {}
+        backend = data.get("backend", "")
+        if timings:
+            parts = []
+            for key, label in (
+                ("mic_activation_s", "mikrofon"),
+                ("record_duration_s", "nahrávání"),
+                ("stt_s", "STT"),
+                ("llm_first_token_s", "LLM 1. token"),
+                ("llm_total_s", "LLM celkem"),
+                ("tts_synth_s", "TTS"),
+                ("playback_start_s", "přehrávání"),
+                ("end_to_end_s", "celkem"),
+            ):
+                value = timings.get(key)
+                if value is not None:
+                    parts.append(f"{label} {value:.2f} s")
+            self._timings.setText("\n".join(parts))
+        reason = data.get("rejected_reason")
+        if reason:
+            self._stt_info.setText(f"STT ({backend}): odmítnuto - {reason}")
+        elif backend:
+            self._stt_info.setText(
+                f"STT ({backend}): {data.get('segment_count', 0)} segmentů, "
+                f"rms {data.get('audio_rms', 0):.4f}"
+            )
+
+    def _on_voice_stage(self, event: Any) -> None:
+        """Zobrazí aktuální fázi hlasového cyklu."""
+        stage = getattr(event, "stage", None)
+        if stage is None:
+            return
+        name = getattr(stage, "value", str(stage))
+        if name in ("recording", "transcribing"):
+            self._stt_info.setText(f"STT: {name}")
 
     def refresh_theme(self) -> None:
         self._theme = get_theme(self._ctx.settings.theme)

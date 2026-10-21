@@ -70,6 +70,14 @@ SECURITY_LOG_PATH = DATA_DIR / "logs" / "security.jsonl"
 PIPER_VOICES_DIR = MODELS_DIR / "piper"
 VAD_MODEL_DIR = MODELS_DIR / "vad"
 VAD_MODEL_PATH = VAD_MODEL_DIR / "silero_vad.onnx"
+
+# Modely whisper.cpp (nahradni faster-whisper, ktery je na nepodepsanych
+# Windows blokovan zasadou WDAC).
+WHISPER_MODELS_DIR = MODELS_DIR / "whisper"
+WHISPER_VAD_MODEL = MODELS_DIR / "vad" / "ggml-silero-vad.bin"
+
+# Podporovane velikosti modelu whisper.cpp.
+WHISPER_MODEL_SIZES = ("tiny", "base", "small", "medium")
 WHISPER_CACHE_DIR = MODELS_DIR / "whisper"
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"

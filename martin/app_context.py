@@ -6,6 +6,7 @@ Vlastní všechny signály, které UI potřebuje, a drží stav aplikace.
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
 
 from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal
@@ -26,10 +27,15 @@ from martin.paths import (
     DB_PATH,
     SECURITY_LOG_PATH,
     VAD_MODEL_PATH,
+    WHISPER_MODELS_DIR,
+    WHISPER_VAD_MODEL,
 )
 from martin.security.audit import AuditLog
 from martin.security.engine import PolicyEngine, ToolRegistry
-from martin.speech.stt import AudioRecorder, PushToTalk, SileroVAD, WhisperSTT
+from martin.speech.pipeline import Stage, VoiceEvent, VoicePipeline
+from martin.speech.streaming_tts import StreamingTTS
+from martin.speech.stt import AudioRecorder, SileroVAD
+from martin.speech.whispercpp_backend import WhisperCppBackend
 from martin.speech.tts import PiperTTS
 from martin.system.apps import AppRegistry
 from martin.system.windows import VolumeController
@@ -71,6 +77,8 @@ class AppContext(QObject):
     security_event = Signal(object)
     theme_changed = Signal(object)
     quit_requested = Signal()
+    voice_stage = Signal(object)
+    voice_diagnostics = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -114,19 +122,35 @@ class AppContext(QObject):
 
         # --- hlas ---
         self.tts = PiperTTS(
-            self.settings.tts_voice, self.settings.tts_rate, self.settings.tts_output_device
-        )
-        self.stt = WhisperSTT(
-            self.settings.stt_model,
-            self.settings.stt_device,
-            self.settings.stt_compute_type,
-            self.settings.stt_language,
+            self.settings.tts_voice,
+            self.settings.tts_rate,
+            self.settings.tts_output_device,
         )
 
+        # Mikrofon - kazdy cyklus vytvori vlastni zaznamovac, aby se
+        # nestalo, ze predchozi cyklus drzel zarizeni zamcenne.
         self.recorder = AudioRecorder(self.settings.mic_device or None)
         vad = SileroVAD(str(VAD_MODEL_PATH))
         vad.load()
-        self.push_to_talk = PushToTalk(self.stt, self.recorder, vad)
+        self.vad = vad
+
+        # Rozpoznani reci - whisper.cpp (faster-whisper je na tomto PC
+        # blokovan zasadou WDAC, viz martin/speech/whispercpp_backend.py).
+        self.stt_backend = WhisperCppBackend(
+            model_size=self.settings.stt_model,
+            models_dir=WHISPER_MODELS_DIR,
+            language=self.settings.stt_language,
+            vad_model_path=WHISPER_VAD_MODEL,
+            silence_rms=float(self.settings.extra.get("stt_silence_rms", 0.006)),
+        )
+        self.voice_pipeline = VoicePipeline(
+            self.stt_backend,
+            lambda: AudioRecorder(self.settings.mic_device or None),
+            self.tts,
+        )
+        self.voice_pipeline.set_callbacks(
+            on_event=self._on_voice_event,
+        )
 
         # --- vidění ---
         self.screen_capture = ScreenCapture()
@@ -148,6 +172,7 @@ class AppContext(QObject):
         self._worker: Any | None = None
         self._busy = threading.Event()
         self._listening = False
+        self._voice_busy = False
         self._last_model_label = ""
 
         self.monitor.add_callback(self._on_snapshot)
@@ -264,8 +289,8 @@ class AppContext(QObject):
             self.conversations.add_message(self._conversation_id, "assistant", text)
         self.stream_finished.emit(info)
         self.status_message.emit("Připraven")
-        if self.settings.speak_replies and self.settings.tts_enabled and text.strip():
-            self.speak(text)
+        # Hlas přehrává streamovací TTS (viz _ChatWorker) - nechceme
+        # odpověď přehrát podruhe.
 
     def _on_worker_confirm(self, tool: str, args: dict) -> None:
         """Předá žádost o potvrzení do UI a čeká na odpověď.
@@ -335,7 +360,7 @@ class AppContext(QObject):
         """Přepne režim poslouchání (push-to-talk).
 
         Při zapnutí se spustí nahrávání, při vypnutí se zvuk rozpozná
-        a odešle modelu jako zpráva.
+        a odešle modelu jako zpráva. ŽÁDNÝ krok neblokuje GUI vlákno.
         """
         if self._listening:
             self._stop_listening()
@@ -343,43 +368,53 @@ class AppContext(QObject):
             self._start_listening()
 
     def _start_listening(self) -> None:
-        try:
-            ok = self.push_to_talk.start()
-        except Exception as exc:  # noqa: BLE001
-            self.status_message.emit(f"Mikrofon se nepodařilo zapnout: {exc}")
-            self.listening_changed.emit(False)
+        """Zapne nahrávání - neblokuje GUI vlákno."""
+        if self._voice_busy:
+            self.status_message.emit("Martin právě mluví - počkej chvíli.")
             return
-        if not ok:
-            self.status_message.emit(
-                "Mikrofon není dostupný. Zkontroluj nastavení zařízení."
-            )
-            self.listening_changed.emit(False)
-            return
+        # Otevreni mikrofonu bezi v pracovnim vlakne (VoicePipeline).
+        self.voice_pipeline.start_recording()
         self._listening = True
         self.listening_changed.emit(True)
         self.status_message.emit("Poslouchám - řekni něco, pak stiskni znovu.")
 
     def _stop_listening(self) -> None:
+        """Zastaví nahrávání a spustí rozpoznání - neblokuje GUI vlákno."""
         self._listening = False
         self.listening_changed.emit(False)
         self.status_message.emit("Rozpoznávám řeč...")
 
         def run() -> None:
-            try:
-                result = self.push_to_talk.stop()
-            except Exception as exc:  # noqa: BLE001
-                self.status_message.emit(f"Rozpoznání řeči selhalo: {exc}")
+            audio = self.voice_pipeline.stop_recording()
+            if audio is None or len(audio) == 0:
+                self.status_message.emit("Zaznamenal se žádný zvuk.")
                 return
-            if result.error and not result.text:
-                self.status_message.emit(result.error)
+            text = self.voice_pipeline.process_recording(audio)
+            if not text:
+                # Ticho/šum/halucinace - požadavek se NEODESÍLÁ.
                 return
-            if not result.text.strip():
-                self.status_message.emit("Nic jsem neslyšel.")
-                return
-            self.status_message.emit(f"Rozpoznáno: {result.text}")
-            QTimer.singleShot(0, lambda: self.send_message(result.text))
+            QTimer.singleShot(0, lambda: self.send_message(text))
 
         threading.Thread(target=run, name="martin-stt", daemon=True).start()
+
+    def _on_voice_event(self, event: VoiceEvent) -> None:
+        """Zpracuje událost z voice pipeline."""
+        if event.stage is Stage.RECORDING:
+            self.listening_changed.emit(True)
+        elif event.stage is Stage.TRANSCRIBING and event.text:
+            self.status_message.emit(f"Rozpoznáno: {event.text}")
+        elif event.stage is Stage.ERROR:
+            self.status_message.emit(event.message or event.error or "Chyba hlasu.")
+        if event.diagnostics:
+            self.voice_diagnostics.emit(event.diagnostics)
+        self.voice_stage.emit(event)
+
+    def cancel_voice(self) -> None:
+        """Zruší hlasový cyklus (nahrávání, rozpoznávání i mluvení)."""
+        self.voice_pipeline.cancel()
+        self._listening = False
+        self.listening_changed.emit(False)
+        self.stop_speaking()
 
     def focus_input(self) -> None:
         pass
@@ -399,6 +434,11 @@ class AppContext(QObject):
             self.tts.set_voice(self.settings.tts_voice)
             self.tts.set_rate(self.settings.tts_rate)
             self.tts.set_output_device(self.settings.tts_output_device)
+            self.stt_backend.set_model(self.settings.stt_model)
+            self.stt_backend.set_language(self.settings.stt_language)
+            self.stt_backend.set_silence_threshold(
+                float(self.settings.extra.get("stt_silence_rms", 0.006))
+            )
             self.model_changed.emit(self.current_model_label())
             self._emit_tts_status()
         return ok
@@ -435,7 +475,25 @@ class AppContext(QObject):
 
     # -- životní cyklus --------------------------------------------------
     def start(self) -> None:
+        """Spustí monitorování a dopredu nacte modely (v pozadi)."""
         self.monitor.start()
+        threading.Thread(
+            target=self._warm_up_models, name="martin-warmup", daemon=True
+        ).start()
+
+    def _warm_up_models(self) -> None:
+        """Nacte modely dopredu, aby prvni povel byla rychla.
+
+        Delano V POZADIM vlakne - nikdy v GUI vlakne. Nacitani Piper
+        hlasu trva ~6 s a modelu whisper.cpp ~1 s; bez warm-upu by
+        prvni odpoved cekala na to.
+        """
+        if self.settings.tts_enabled:
+            self.tts.warm_up()
+        try:
+            self.stt_backend.warm_up()
+        except Exception as exc:  # noqa: BLE001
+            log.info("Warm-up STT selhal: %s", exc)
 
     def shutdown(self) -> None:
         """Ukončí aplikaci - uvolní zdroje."""
@@ -481,13 +539,32 @@ class _ChatWorker(QObject):
     def run(self) -> None:
         settings = self._ctx.settings
         collected: list[str] = []
+        streamer: StreamingTTS | None = None
+        first_token: list[float] = []
+        llm_start = time.perf_counter()
+
+        # Hlas zacne mluvit uz b behem generovani - neznam es celou
+        # odpoved, ale prvni syntetizovana veta se prehraje drive.
+        if settings.speak_replies and settings.tts_enabled:
+            streamer = StreamingTTS(self._ctx.tts)
+            streamer.set_callbacks(on_playback_start=self._on_playback_start)
 
         def emit(event: OrchestratorEvent, data: dict[str, Any]) -> None:
             if event is OrchestratorEvent.TEXT:
                 text = data.get("text", "")
                 if text:
+                    if not first_token:
+                        first_token.append(time.perf_counter() - llm_start)
+                        self._ctx.voice_pipeline.timings.llm_first_token_s = (
+                            first_token[0]
+                        )
                     collected.append(text)
                     self.chunk.emit(text)
+                    if streamer is not None:
+                        try:
+                            streamer.push_text(text)
+                        except Exception:  # noqa: BLE001
+                            pass
             elif event is OrchestratorEvent.ROUTE:
                 self._ctx.model_changed.emit(
                     f"{data.get('model', '')} ({data.get('provider', '')})"
@@ -527,7 +604,21 @@ class _ChatWorker(QObject):
                 profile=settings.profile,
                 think=settings.thinking,
             )
+            llm_total = time.perf_counter() - llm_start
+            self._ctx.voice_pipeline.timings.llm_total_s = llm_total
+            if streamer is not None:
+                try:
+                    streamer.finish()
+                except Exception:  # noqa: BLE001
+                    pass
             self.finished.emit("".join(collected), "")
         except Exception as exc:  # noqa: BLE001
             log.exception("Chat selhal")
             self.error.emit(f"Chat selhal: {exc}")
+
+    def _on_playback_start(self) -> None:
+        """Signalizuje, ze zvuk zacal hrat."""
+        try:
+            self._ctx.speaking_changed.emit(True)
+        except RuntimeError:
+            pass

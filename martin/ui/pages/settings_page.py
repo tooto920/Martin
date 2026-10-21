@@ -141,6 +141,17 @@ class SettingsPage(QWidget):
         self._stt_model.addItems(["tiny", "base", "small", "medium"])
         form.addRow("Model rozpoznávání:", self._stt_model)
 
+        self._stt_info = QLabel("")
+        self._stt_info.setObjectName("Subtitle")
+        self._stt_info.setWordWrap(True)
+        form.addRow("", self._stt_info)
+
+        self._stt_silence = QDoubleSpinBox()
+        self._stt_silence.setRange(0.0, 0.05)
+        self._stt_silence.setSingleStep(0.001)
+        self._stt_silence.setDecimals(3)
+        form.addRow("Práh ticha (RMS):", self._stt_silence)
+
         self._stt_language = QComboBox()
         self._stt_language.addItems(["cs", "en", "auto"])
         form.addRow("Jazyk:", self._stt_language)
@@ -232,6 +243,10 @@ class SettingsPage(QWidget):
         self._speak_summaries.setChecked(settings.speak_summaries)
         self._stt_model.setCurrentText(settings.stt_model)
         self._stt_language.setCurrentText(settings.stt_language)
+        self._stt_silence.setValue(
+            float(settings.extra.get("stt_silence_rms", 0.006))
+        )
+        self._refresh_stt_info()
         self._wake_word.setChecked(settings.wake_word_enabled)
         self._wake_text.setText(settings.wake_word)
 
@@ -295,6 +310,36 @@ class SettingsPage(QWidget):
         if current_out:
             self._tts_device.setCurrentText(current_out)
 
+    def _refresh_stt_info(self) -> None:
+        """Zobrazí stav rozpoznávání řeči (backend, model, VAD)."""
+        try:
+            from martin.speech.whispercpp_backend import WhisperCppBackend
+            from martin.paths import WHISPER_MODELS_DIR, WHISPER_VAD_MODEL
+
+            backend = WhisperCppBackend(
+                model_size=self._stt_model.currentText() or "small",
+                models_dir=WHISPER_MODELS_DIR,
+                vad_model_path=WHISPER_VAD_MODEL,
+            )
+            status = backend.status()
+            if not status["available"]:
+                self._stt_info.setText(
+                    "Backend whisper.cpp není dostupný v tomto systému."
+                )
+            elif not status["model_present"]:
+                self._stt_info.setText(
+                    f"Model '{status['model_size']}' není stažen "
+                    f"(hledáno v {WHISPER_MODELS_DIR})."
+                )
+            else:
+                vad = "VAD ano" if status["vad_present"] else "VAD ne"
+                self._stt_info.setText(
+                    f"whisper.cpp - model {status['model_size']} ({vad}). "
+                    "Ticho se automaticky odfiltruje."
+                )
+        except Exception as exc:  # noqa: BLE001
+            self._stt_info.setText(f"Stav rozpoznávání: {exc}")
+
     def _refresh_model_list(self) -> None:
         try:
             models = self._ctx.list_models()
@@ -313,6 +358,7 @@ class SettingsPage(QWidget):
         self._save.clicked.connect(self._save_settings)
         self._refresh_models.clicked.connect(self._refresh_model_list)
         self._theme_select.currentIndexChanged.connect(self._on_theme_changed)
+        self._stt_model.currentIndexChanged.connect(self._refresh_stt_info)
 
     def _on_theme_changed(self) -> None:
         theme = self._theme_select.currentData()
@@ -337,6 +383,7 @@ class SettingsPage(QWidget):
         settings.speak_summaries = self._speak_summaries.isChecked()
         settings.stt_model = self._stt_model.currentText().strip()
         settings.stt_language = self._stt_language.currentText().strip()
+        settings.extra["stt_silence_rms"] = self._stt_silence.value()
         mic_data = self._mic_device.currentData()
         if mic_data is not None:
             settings.mic_device = str(mic_data)

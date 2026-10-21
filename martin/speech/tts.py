@@ -1,15 +1,21 @@
 """Syntéza řeči přes Piper - plně offline, s českými hlasy.
 
-Piper běží jako podproces přes `piper` CLI (případně `python -m piper`).
-Přehrávání zajišťuje sounddevice, takže lze přehrávání kdykoli přerušit.
+DŮLEŽITÉ: Piper se volá IN-PROCES (přes `piper.PiperVoice`), ne jako
+podproces. Podproces měl dva problémy:
+  1. V balíčku PyInstaller není `python.exe`, takže `-m piper` ve
+     skutečnosti spustilo MARTINA SAMOTNÉHO (novou instanci GUI) a
+     volání čekalo na timeout - přesně dvě minuty.
+  2. Start podprocesu trval ~9 s, takže i v IDE byla odezva 18x
+     pomalejší než v reálném čase.
+
+In-proces volání je 8x rychlejší a funguje i v zabalené aplikaci.
+
+Přehrávání zajišťuje sounddevice, takže je kdykoli přerušitelné.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
-import subprocess
-import sys
 import threading
 import wave
 from dataclasses import dataclass
@@ -20,6 +26,7 @@ import numpy as np
 
 from martin.core.logging import get_logger
 from martin.paths import find_piper_voice
+from martin.speech.speech_text_formatter import to_speech_text
 
 log = get_logger("martin.speech.tts")
 
@@ -33,10 +40,12 @@ class TTSResult:
     audio_path: str = ""
     duration_s: float = 0.0
     error: str = ""
+    synth_s: float = 0.0
+    load_s: float = 0.0
 
 
 class PiperTTS:
-    """Syntéza české řeči pomocí Piper."""
+    """Syntéza české řeči pomocí Piper (in-proces)."""
 
     def __init__(
         self,
@@ -48,6 +57,9 @@ class PiperTTS:
         self._rate = rate
         self._output_device = output_device
         self._lock = threading.RLock()
+        self._voice_obj: Any | None = None
+        self._loaded_key: str = ""
+        self._load_s = 0.0
         self._stream: Any | None = None
         self._playing = False
         self._stop_event = threading.Event()
@@ -66,14 +78,28 @@ class PiperTTS:
         self._rate = max(0.5, min(2.0, float(rate)))
 
     def set_voice(self, voice: str) -> None:
-        self._voice = voice
+        with self._lock:
+            if voice != self._voice:
+                self._voice = voice
+                self._voice_obj = None
+                self._loaded_key = ""
 
     def set_output_device(self, device: str) -> None:
         self._output_device = device
 
     def available(self) -> bool:
         """Je Piper použitelný?"""
-        return self.voice_path() is not None and self._piper_command() is not None
+        return self.voice_path() is not None and self._piper_importable()
+
+    @staticmethod
+    def _piper_importable() -> bool:
+        try:
+            from piper import PiperVoice
+
+            _ = PiperVoice
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
     def voice_path(self) -> Path | None:
         """Cesta k .onnx modelu hlasu."""
@@ -87,77 +113,146 @@ class PiperTTS:
             return []
         return sorted(p.stem for p in PIPER_VOICES_DIR.glob("*.onnx"))
 
-    @staticmethod
-    def _piper_command() -> list[str] | None:
-        """Najde způsob spuštění Piperu (seznam argumentů).
+    # -- model ----------------------------------------------------------
+    def _ensure_voice(self) -> Any:
+        """Nacte hlas (lazy, thread-safe) a vrati ho.
 
-        Hledá postupně: piper v PATH, piper v adresáři aplikace/venv,
-        pak python -m piper.
+        Nacitani trva nekolik sekund, proto se nikdy nedela v GUI
+        vlakne - pri prvnim pouziti bezi v pozadim vlakne.
         """
-        direct = shutil.which("piper")
-        if direct:
-            return [direct]
+        with self._lock:
+            if self._voice_obj is not None and self._loaded_key == self._voice:
+                return self._voice_obj
+        with self._lock:
+            self._load_s = 0.0
+        import time as _time
 
-        candidates = []
-        # Vedle spustitelného souboru aplikace (PyInstaller onedir).
-        if getattr(sys, "frozen", False):
-            candidates.append(Path(sys.executable).parent / "piper.exe")
+        start = _time.perf_counter()
+        try:
+            from piper import PiperVoice
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                "Piper není dostupný - knihovna piper-tts není nainstalována."
+            ) from exc
+
+        model = self.voice_path()
+        if model is None:
+            raise RuntimeError("Není dostupný žádný český Piper hlas.")
+
+        config = model.with_suffix(model.suffix + ".json")
+        if config.is_file():
+            voice = PiperVoice.load(str(model), config_path=str(config))
         else:
-            # Adresář skriptu venvu - obvykle .venv/Scripts.
-            candidates.append(Path(sys.executable).parent / "piper.exe")
-            candidates.append(Path(__file__).resolve().parent.parent.parent / ".venv" / "Scripts" / "piper.exe")
+            voice = PiperVoice.load(str(model))
 
-        for candidate in candidates:
-            if candidate.is_file():
-                return [str(candidate)]
+        elapsed = _time.perf_counter() - start
+        with self._lock:
+            self._voice_obj = voice
+            self._loaded_key = self._voice
+            self._load_s = elapsed
+        log.info("Piper hlas %s nacten za %.2f s", self._voice, elapsed)
+        return voice
 
-        return [sys.executable, "-m", "piper"]
+    def warm_up(self) -> bool:
+        """Nacte hlas dopredu, aby prvni odpoved znela okamzite.
+
+        Volat z vlakna - nikdy z GUI vlakna.
+        """
+        try:
+            self._ensure_voice()
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Warm-up Piper selhal: %s", exc)
+            return False
+
+    def unload(self) -> None:
+        """Uvolni hlas z paměti."""
+        with self._lock:
+            self._voice_obj = None
+            self._loaded_key = ""
 
     # -- syntéza -------------------------------------------------------
     def synthesize(self, text: str) -> TTSResult:
-        """Vygeneruje WAV soubor z textu."""
+        """Vygeneruje WAV soubor z textu (in-proces, bez podprocesu)."""
+        import time as _time
+
         text = (text or "").strip()
         if not text:
             return TTSResult(ok=False, error="Prázdný text.")
 
-        voice = self.voice_path()
-        if voice is None:
-            return TTSResult(ok=False, error="Není dostupný žádný český Piper hlas.")
-
-        command = self._piper_command()
-        if command is None:
-            return TTSResult(ok=False, error="Piper není nainstalován.")
+        try:
+            voice = self._ensure_voice()
+        except RuntimeError as exc:
+            return TTSResult(ok=False, error=str(exc))
 
         out_path = Path(
             os.environ.get("TEMP", str(Path.home() / "AppData" / "Local" / "Temp"))
         ) / f"martin_tts_{os.getpid()}_{threading.get_ident()}.wav"
 
-        args = [*command, "--model", str(voice), "--output_file", str(out_path)]
-        if abs(self._rate - 1.0) > 0.01:
-            args += ["--length_scale", f"{1.0 / self._rate:.3f}"]
-
+        start = _time.perf_counter()
         try:
-            result = subprocess.run(
-                args,
-                input=text.encode("utf-8"),
-                capture_output=True,
-                timeout=120,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
+            samples = self._synthesize_samples(voice, text)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Syntéza selhala: %s", exc)
             return TTSResult(ok=False, error=f"Syntéza selhala: {exc}")
+        synth_time = _time.perf_counter() - start
 
-        if result.returncode != 0 or not out_path.is_file():
-            stderr = result.stderr.decode("utf-8", errors="ignore")[:300]
-            return TTSResult(ok=False, error=f"Piper selhal: {stderr or result.returncode}")
+        if samples is None or len(samples) == 0:
+            return TTSResult(ok=False, error="Piper nevygeneroval žádný zvuk.")
 
-        duration = self._wav_duration(out_path)
+        sample_rate = self._sample_rate(voice)
+        try:
+            with wave.open(str(out_path), "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(sample_rate)
+                pcm = np.clip(samples, -1.0, 1.0)
+                wav.writeframes((pcm * 32767.0).astype(np.int16).tobytes())
+        except (OSError, wave.Error) as exc:
+            return TTSResult(ok=False, error=f"Uložení audia selhalo: {exc}")
+
+        duration = len(samples) / float(sample_rate or 1)
         return TTSResult(
             ok=True,
             text=text,
             audio_path=str(out_path),
             duration_s=duration,
+            synth_s=synth_time,
+            load_s=self._load_s,
         )
+
+    def _sample_rate(self, voice: Any) -> int:
+        try:
+            return int(voice.config.sample_rate)
+        except Exception:  # noqa: BLE001
+            return 22050
+
+    def _synthesize_samples(self, voice: Any, text: str) -> np.ndarray | None:
+        """Syntéza do numpy pole.
+
+        Rychlost mluvení se upravuje přes délku_scale - delší scale =
+        pomalejší mluvení (Piper >= 1.2 umí i parametry rychlosti).
+        """
+        chunks = list(voice.synthesize(text))
+        if not chunks:
+            return None
+        arrays = [
+            np.asarray(chunk.audio_float_array, dtype=np.float32) for chunk in chunks
+        ]
+        audio = np.concatenate(arrays) if arrays else None
+        if audio is None:
+            return None
+
+        rate = self._rate
+        if abs(rate - 1.0) > 0.01:
+            # Změna tempa změnou délky zvuku (jednoduchý time-stretch).
+            factor = 1.0 / rate
+            new_length = max(1, int(len(audio) * factor))
+            positions = np.linspace(0.0, len(audio) - 1, num=new_length)
+            audio = np.interp(positions, np.arange(len(audio)), audio).astype(
+                np.float32
+            )
+        return audio
 
     def speak(self, text: str) -> TTSResult:
         """Syntéza a přehrání. Přehrávání je přerušitelné."""
@@ -167,6 +262,7 @@ class PiperTTS:
         self.play_file(result.audio_path)
         return result
 
+    # -- přehrávání -----------------------------------------------------
     def play_file(self, path: str) -> bool:
         """Přehrá WAV soubor. Vrací True, pokud se přehrál celý."""
         file_path = Path(path)
@@ -198,19 +294,22 @@ class PiperTTS:
             except (TypeError, ValueError):
                 device = None
 
+        # sounddevice s int16 streamem chce numpy pole, ne raw bytes.
+        samples = np.frombuffer(frames, dtype=np.int16)
+        if channels > 1:
+            samples = samples.reshape(-1, channels)[:, 0]
+
         with self._lock:
             self._stop_event.clear()
             self._playing = True
         try:
             with sd.OutputStream(
                 samplerate=samplerate,
-                channels=channels,
+                channels=1,
                 dtype="int16",
                 device=device,
             ) as stream:
                 self._stream = stream
-                # sounddevice s int16 streamem chce numpy pole, ne raw bytes.
-                samples = np.frombuffer(frames, dtype=np.int16)
                 block = samplerate // 20
                 offset = 0
                 total = len(samples)
@@ -259,25 +358,14 @@ class PiperTTS:
     def is_playing(self) -> bool:
         return self._playing
 
+    # -- text -----------------------------------------------------------
     def summarize_for_speech(self, text: str, max_chars: int = 400) -> str:
-        """Zkrácí dlouhou odpověď na mluvitelný souhrn."""
-        cleaned = " ".join((text or "").split())
-        if len(cleaned) <= max_chars:
-            return cleaned
-        cut = cleaned[:max_chars]
-        for marker in (". ", "! ", "? "):
-            index = cut.rfind(marker)
-            if index > max_chars * 0.4:
-                return cut[: index + 1]
-        return cut.rstrip() + "..."
+        """Připraví text pro mluvení - odstraní Markdown.
 
-    @staticmethod
-    def _wav_duration(path: Path) -> float:
-        try:
-            with wave.open(str(path), "rb") as wav:
-                return wav.getnframes() / float(wav.getframerate() or 1)
-        except (OSError, wave.Error):
-            return 0.0
+        Markdown se NIKDY nesmí číst nahlas. Výsledek je čistá
+        mluvenina připravená k syntéze.
+        """
+        return to_speech_text(text, max_chars=max_chars)
 
     def model_info(self) -> dict[str, Any]:
         """Informace o použitém hlasu."""
@@ -287,6 +375,8 @@ class PiperTTS:
             "voice": self._voice,
             "rate": self._rate,
             "voices": self.available_voices(),
+            "loaded": self._voice_obj is not None,
+            "mode": "in-process",
         }
         if voice is not None:
             info["model_path"] = str(voice)
