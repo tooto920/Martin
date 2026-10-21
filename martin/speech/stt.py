@@ -24,6 +24,15 @@ from martin.core.logging import get_logger
 
 log = get_logger("martin.speech.stt")
 
+__all__ = [
+    "AudioRecorder",
+    "PushToTalk",
+    "SileroVAD",
+    "TranscriptionResult",
+    "WhisperSTT",
+    "resample",
+]
+
 SAMPLE_RATE = 16000
 FRAME_SIZE = 1600  # 100 ms
 
@@ -458,3 +467,67 @@ class SileroVAD:
                 speech = True
         self._remainder = buffer[usable:].copy()
         return speech
+
+class PushToTalk:
+    """Push-to-talk rezim - nahravani bezi jen kdyz uzivatel drzi tlacitko.
+
+    Prubeh:
+      1. `start()` spusti nahravani.
+      2. Nahravani bezi, dokud uzivatel mluvi.
+      3. `stop()` ukonci nahravani a vrati rozpoznaný text.
+    """
+
+    def __init__(
+        self,
+        stt: WhisperSTT,
+        recorder: AudioRecorder | None = None,
+        vad: SileroVAD | None = None,
+        silence_seconds: float = 1.2,
+        min_speech_seconds: float = 0.4,
+    ) -> None:
+        self._stt = stt
+        self._recorder = recorder or AudioRecorder()
+        self._vad = vad or SileroVAD()
+        self._silence_seconds = silence_seconds
+        self._min_speech_seconds = min_speech_seconds
+        self._recording = False
+
+    @property
+    def recording(self) -> bool:
+        return self._recording
+
+    @property
+    def recorder(self) -> AudioRecorder:
+        return self._recorder
+
+    def start(self) -> bool:
+        """Zacne nahravani. Vraci True, pokud se podarilo."""
+        if self._recording:
+            return True
+        if not self._recorder.start():
+            return False
+        if self._vad is not None:
+            self._vad.reset()
+        self._recording = True
+        return True
+
+    def stop(self) -> TranscriptionResult:
+        """Zastavi nahravani a rozpoznane rec."""
+        if not self._recording:
+            return TranscriptionResult(text="", error="Neprobihalo nahravani.")
+        self._recording = False
+        audio = self._recorder.stop()
+        if audio is None or len(audio) == 0:
+            return TranscriptionResult(text="", error="Zaznamenal se zadny zvuk.")
+        rate = self._recorder.sample_rate
+        duration = len(audio) / float(rate)
+        if duration < self._min_speech_seconds:
+            return TranscriptionResult(
+                text="", duration_s=duration, error="Nahrani bylo prilis kratke."
+            )
+        return self._stt.transcribe(audio, sample_rate=rate)
+
+    def cancel(self) -> None:
+        """Zastavi nahravani bez rozpoznavani."""
+        self._recording = False
+        self._recorder.stop()

@@ -163,7 +163,9 @@ class MainWindow(QMainWindow):
         self._tray_floating.setCheckable(True)
         self._tray_floating.setChecked(self._ctx.settings.floating_window)
 
+        self._tray_hide = QAction("Skryt okno", self)
         menu.addAction(self._tray_show)
+        self._tray_hide.triggered.connect(self.hide)
         menu.addAction(self._tray_floating)
         menu.addSeparator()
         menu.addAction(self._tray_listen)

@@ -146,7 +146,11 @@ class SettingsPage(QWidget):
         form.addRow("Jazyk:", self._stt_language)
 
         self._mic_device = QComboBox()
+        self._mic_device.setEditable(True)
         form.addRow("Mikrofon:", self._mic_device)
+
+        self._refresh_voices()
+        self._refresh_audio_devices()
 
         self._wake_word = QCheckBox("Používat aktivační slovo")
         form.addRow("", self._wake_word)
@@ -220,6 +224,10 @@ class SettingsPage(QWidget):
 
         self._tts_enabled.setChecked(settings.tts_enabled)
         self._tts_voice.setCurrentText(settings.tts_voice)
+        if settings.mic_device:
+            self._mic_device.setCurrentText(settings.mic_device)
+        if settings.tts_output_device:
+            self._tts_device.setCurrentText(settings.tts_output_device)
         self._tts_rate.setValue(settings.tts_rate)
         self._speak_summaries.setChecked(settings.speak_summaries)
         self._stt_model.setCurrentText(settings.stt_model)
@@ -241,6 +249,51 @@ class SettingsPage(QWidget):
         self._speak_replies.setChecked(settings.speak_replies)
         self._log_security.setChecked(settings.log_security)
         self._refresh_model_list()
+
+    def _refresh_voices(self) -> None:
+        """Naplní seznam dostupných českých hlasů Piper."""
+        try:
+            from martin.speech.tts import PiperTTS
+
+            voices = PiperTTS().available_voices()
+        except Exception:  # noqa: BLE001
+            voices = []
+        current = self._tts_voice.currentText()
+        self._tts_voice.clear()
+        self._tts_voice.addItems(voices)
+        if current:
+            self._tts_voice.setCurrentText(current)
+        elif voices:
+            self._tts_voice.setCurrentText(voices[0])
+
+    def _refresh_audio_devices(self) -> None:
+        """Naplní seznamy mikrofonů a výstupních zařízení."""
+        try:
+            import sounddevice as sd  # type: ignore
+
+            devices = sd.query_devices()
+        except Exception:  # noqa: BLE001
+            return
+
+        current_mic = self._mic_device.currentText()
+        current_out = self._tts_device.currentText()
+
+        self._mic_device.clear()
+        self._mic_device.addItem("", "")
+        self._tts_device.clear()
+        self._tts_device.addItem("", "")
+
+        for device in devices:
+            name = str(device["name"])
+            if device["max_input_channels"] > 0:
+                self._mic_device.addItem(f"{name} ({device['index']})", str(device["index"]))
+            if device["max_output_channels"] > 0:
+                self._tts_device.addItem(f"{name} ({device['index']})", str(device["index"]))
+
+        if current_mic:
+            self._mic_device.setCurrentText(current_mic)
+        if current_out:
+            self._tts_device.setCurrentText(current_out)
 
     def _refresh_model_list(self) -> None:
         try:
@@ -284,7 +337,10 @@ class SettingsPage(QWidget):
         settings.speak_summaries = self._speak_summaries.isChecked()
         settings.stt_model = self._stt_model.currentText().strip()
         settings.stt_language = self._stt_language.currentText().strip()
-        settings.mic_device = self._mic_device.currentData() or ""
+        mic_data = self._mic_device.currentData()
+        if mic_data is not None:
+            settings.mic_device = str(mic_data)
+        settings.tts_output_device = str(self._tts_device.currentData() or "")
         settings.wake_word_enabled = self._wake_word.isChecked()
         settings.wake_word = self._wake_text.text().strip() or "martine"
 

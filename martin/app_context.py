@@ -21,7 +21,12 @@ from martin.llm.router import ModelRouter
 from martin.memory.conversations import ConversationStore
 from martin.memory.manager import MemoryManager
 from martin.memory.store import MemoryStore
-from martin.paths import DB_PATH, SECURITY_LOG_PATH, VAD_MODEL_PATH
+from martin.paths import (
+    CONVERSATIONS_DB_PATH,
+    DB_PATH,
+    SECURITY_LOG_PATH,
+    VAD_MODEL_PATH,
+)
 from martin.security.audit import AuditLog
 from martin.security.engine import PolicyEngine, ToolRegistry
 from martin.speech.stt import AudioRecorder, PushToTalk, SileroVAD, WhisperSTT
@@ -93,7 +98,7 @@ class AppContext(QObject):
         # --- data ---
         self.memory_store = MemoryStore(DB_PATH)
         self.memory_manager = MemoryManager(self.memory_store)
-        self.conversations = ConversationStore(DB_PATH)
+        self.conversations = ConversationStore(CONVERSATIONS_DB_PATH)
 
         # --- hardware ---
         self.monitor = HardwareMonitor()

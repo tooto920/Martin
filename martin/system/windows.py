@@ -138,12 +138,24 @@ class VolumeController:
         self._init_backend()
 
     def _init_backend(self) -> None:
+        """Inicializuje pycaw backend.
+
+        pycaw meni API mezi verzemi - stara verze ma
+        `AudioDevice.Activate(...)`, nova ma primo `AudioDevice.EndpointVolume`.
+        Podporujeme obe.
+        """
         try:
             from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume  # type: ignore
 
             devices = AudioUtilities.GetSpeakers()
-            interface = devices.Activate(IAudioEndpointVolume._iid_, 0, None)
-            self._backend = interface
+            interface = getattr(devices, "EndpointVolume", None)
+            if interface is not None:
+                # Nova API (pycaw >= 2025).
+                self._backend = interface
+            else:
+                # Stara API.
+                interface = devices.Activate(IAudioEndpointVolume._iid_, 0, None)
+                self._backend = interface
             self._available = True
             log.info("Ovládání hlasitosti: pycaw")
         except Exception as exc:  # noqa: BLE001
@@ -163,7 +175,7 @@ class VolumeController:
                 level = self._backend.GetMasterVolumeLevelScalar()
                 return int(round(level * 100))
             except Exception:  # noqa: BLE001
-                return None
+                pass
         return None
 
     def set_volume(self, percent: int) -> bool:

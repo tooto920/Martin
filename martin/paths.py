@@ -34,12 +34,26 @@ def _data_dir() -> Path:
 
 
 def _models_dir() -> Path:
-    """Adresář s modely (Piper hlasy)."""
+    """Adresář s modely (Piper hlasy, Silero VAD).
+
+    PyInstaller (onedir) umisťuje balená data do `_internal`, ale
+    instalace ZIP je umisťuje vedle exe. Proto se kontrolují oba
+    varianty a vrací se ten, který existuje.
+    """
     override = os.environ.get("MARTIN_MODELS_DIR")
     if override:
         return Path(override).expanduser().resolve()
     if getattr(sys, "frozen", False):
-        return Path(getattr(sys, "_MEIPASS", _base_dir())) / "models"
+        base = _base_dir()
+        candidates = [
+            base / "models",
+            Path(getattr(sys, "_MEIPASS", base)) / "models",
+            base / "_internal" / "models",
+        ]
+        for candidate in candidates:
+            if candidate.is_dir():
+                return candidate
+        return candidates[0]
     return _base_dir() / "models"
 
 
@@ -48,6 +62,8 @@ DATA_DIR = _data_dir()
 MODELS_DIR = _models_dir()
 
 DB_PATH = DATA_DIR / "martin.db"
+# Databaze konverzaci je zvlastni, aby se nesmysla s pameti.
+CONVERSATIONS_DB_PATH = DATA_DIR / "konverzace.db"
 LOG_DIR = DATA_DIR / "logs"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 SECURITY_LOG_PATH = DATA_DIR / "logs" / "security.jsonl"
@@ -73,16 +89,36 @@ def ensure_dirs() -> None:
         path.mkdir(parents=True, exist_ok=True)
 
 
+def _piper_search_dirs() -> list[Path]:
+    """Adresáře, ve kterých se hledají české hlasy Piper."""
+    dirs = [PIPER_VOICES_DIR]
+    if getattr(sys, "frozen", False):
+        base = _base_dir()
+        for extra in (
+            base / "models" / "piper",
+            base / "_internal" / "models" / "piper",
+            Path(getattr(sys, "_MEIPASS", base)) / "models" / "piper",
+        ):
+            if extra not in dirs:
+                dirs.append(extra)
+    return dirs
+
+
 def find_piper_voice(name: str | None = None) -> Path | None:
     """Najde soubor .onnx českého Piper hlasu.
 
     Vrací cestu k modelu, nebo None pokud není dostupný žádný hlas.
     """
+    dirs = _piper_search_dirs()
     if name:
-        candidate = PIPER_VOICES_DIR / f"{name}.onnx"
-        return candidate if candidate.is_file() else None
+        for directory in dirs:
+            candidate = directory / f"{name}.onnx"
+            if candidate.is_file():
+                return candidate
+        return None
     for stem in PIPER_VOICE_CANDIDATES:
-        candidate = PIPER_VOICES_DIR / f"{stem}.onnx"
-        if candidate.is_file():
-            return candidate
+        for directory in dirs:
+            candidate = directory / f"{stem}.onnx"
+            if candidate.is_file():
+                return candidate
     return None
