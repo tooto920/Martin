@@ -75,14 +75,17 @@ class AnimatedButton(QPushButton):
         self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
 
         def update(value: Any) -> None:
-            self._current_color = QColor(value)
+            try:
+                self._current_color = QColor(value)
+            except (TypeError, ValueError):
+                self._current_color = QColor(color)
             self._refresh_style()
 
         try:
-            self._animation.finished.connect(update)
+            self._animation.valueChanged.connect(update)
             self._animation.start()
         except (TypeError, RuntimeError):
-            self._current_color = color
+            self._current_color = QColor(color)
             self._refresh_style()
 
     def enterEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
@@ -164,11 +167,14 @@ class AnimatedToggle(QCheckBox):
         self._animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
 
         def update(value: Any) -> None:
-            self._color = QColor(value)
+            try:
+                self._color = QColor(value)
+            except (TypeError, ValueError):
+                self._color = QColor(target)
             self._refresh()
 
         try:
-            self._animation.finished.connect(update)
+            self._animation.valueChanged.connect(update)
             self._animation.start()
         except (TypeError, RuntimeError):
             self._color = QColor(target)

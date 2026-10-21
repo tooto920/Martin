@@ -135,6 +135,7 @@ class AppContext(QObject):
 
         self._conversation_id: int | None = None
         self._thread: QThread | None = None
+        self._worker: Any | None = None
         self._busy = threading.Event()
         self._last_model_label = ""
 
@@ -226,15 +227,23 @@ class AppContext(QObject):
 
         worker = _ChatWorker(self, messages)
         thread = QThread()
-        worker.moveToThread(thread)
+        self._worker = worker
+        self._thread = thread
+
+        # Worker se presune do vlakna az PO pripojeni signalu - jinak
+        # by `started` signal sel az v novem vlakne a `run` se nikdy
+        # nezavolal.
         thread.started.connect(worker.run)
+
+        # Signaly z pracovniho vlakna do UI - typovano, aby Qt vedel,
+        # ze jde o跨界 signal mezi vlakny.
         worker.chunk.connect(self.stream_chunk)
         worker.finished.connect(self._on_finished)
         worker.error.connect(self._on_worker_error)
+
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
-        self._thread = thread
         thread.start()
 
     def _on_finished(self, text: str, info: str) -> None:
