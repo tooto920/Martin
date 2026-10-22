@@ -123,3 +123,7 @@ Sestavení: `python packaging/build_windows.py --out build_output/cloud-release`
 Složka musí být nová. ZIP: `python packaging/make_installer.py --build-dir
 build_output/cloud-release --out build_output/Martin-2.1-Cloud-win64.zip`.
 Build obsahuje manifest SHA-256 souborů a zdrojového commitu.
+
+## Stav tohoto sestavení na testovacím počítači
+
+Dne 2026-10-21 Windows zablokoval nový nepodepsaný Martin.exe při vytvoření procesu: WinError 4551, Code Integrity 3077, zásada VerifiedAndReputableDesktop. Toto EXE proto na tomto zařízení nemá ověřený běh. Zdrojová verze, skutečný cloud a hlas byly testovány samostatně; tyto výsledky nenahrazují test EXE. Je zapotřebí důvěryhodné podepsání nebo schválené řešení správce zařízení. Bezpečnostní nastavení Windows nebylo měněno.
