@@ -97,7 +97,7 @@ Agregace jedinečných ID z uložených živých testů a izolovaných ledgerů:
 ## Build, Git a distribuce
 
 - Větev `codex/martin-2.1-cloud`, předchozí 2.0 základ `71e9df5041a3d90c56f70c9cff1c261f752e3b26`.
-- **Zdrojový commit EXE: `283be3368fd2e12a47613e4e31ba7b7bc780955e`.** Následný dokumentační commit nemění zdroje uvnitř EXE. Stav odeslání je v `GIT_STATUS_MARTIN_2_1.txt` vedle tohoto protokolu.
+- **Zdrojový commit EXE: `283be3368fd2e12a47613e4e31ba7b7bc780955e`.** Následné dokumentační commity nemění zdroje uvnitř EXE. Odeslání větve `codex/martin-2.1-cloud` bylo ověřeno proti vzdálenému repozitáři; doprovodné soubory s měřeními jsou v lokální předané složce outputs.
 - EXE `C:\Users\lukas\Downloads\Martin\build_output\cloud-release\Martin\Martin.exe` — sestaven, zde **BLOCKED**, nikoli runtime ověřen.
 - ZIP `Martin-2.1-Cloud-win64.zip`, **895970959 B**, SHA-256 `ee0114651605745258a59ca3566238e3dbf79eab0680d6337178e3ccc1a7a010`.
 - Původní `build_output\repaired-release` i dřívější 2.0 ZIP jsou zachované. Manifest obsahuje identitu zdrojů a kontrolní součty distribuovaných souborů.
